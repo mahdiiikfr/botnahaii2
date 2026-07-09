@@ -5,8 +5,7 @@ from config.config import ADMINS, CARD_NUMBER, CARD_HOLDER
 def get_main_keyboard(user_id: int) -> InlineKeyboardMarkup:
     buttons = [
         [
-            InlineKeyboardButton(text="🛍️ دسته‌بندی محصولات", callback_data="categories_list", style=ButtonStyle.PRIMARY),
-            InlineKeyboardButton(text="👤 حساب کاربری", callback_data="user_profile", style=ButtonStyle.PRIMARY)
+            InlineKeyboardButton(text="🛍️ فروشگاه", callback_data="categories_list", style=ButtonStyle.PRIMARY)
         ],
         [
             InlineKeyboardButton(text="📥 سفارشات من", callback_data="my_orders", style=ButtonStyle.PRIMARY),
@@ -18,6 +17,9 @@ def get_main_keyboard(user_id: int) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="🎫 ثبت تیکت پشتیبانی", callback_data="support_info", style=ButtonStyle.PRIMARY)
+        ],
+        [
+            InlineKeyboardButton(text="👤 حساب کاربری", callback_data="user_profile", style=ButtonStyle.PRIMARY)
         ]
     ]
     # Add Admin Panel button if the user is an admin
