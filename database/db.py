@@ -34,14 +34,16 @@ class Database:
                 logger.info("Disconnected from SQLite database.")
 
     async def _create_tables(self):
-        # Create users table
+        # Create users table with wallet balance and test_account_used columns
         await self.conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY,
                 username TEXT,
                 full_name TEXT,
                 joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                expires_at TIMESTAMP DEFAULT NULL
+                expires_at TIMESTAMP DEFAULT NULL,
+                balance INTEGER DEFAULT 0,
+                test_account_used INTEGER DEFAULT 0
             )
         """)
 
@@ -54,7 +56,6 @@ class Database:
         """)
 
         # Create products table
-        # auto_deliver: if 1, use pre-defined items/inventory. if 0, manual delivery by admin.
         await self.conn.execute("""
             CREATE TABLE IF NOT EXISTS products (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,13 +80,13 @@ class Database:
         """)
 
         # Create orders table
-        # payment_method: 'zarinpal' or 'card'
+        # payment_method: 'zarinpal', 'card', or 'wallet'
         # status: 'pending', 'approved', 'rejected'
         await self.conn.execute("""
             CREATE TABLE IF NOT EXISTS orders (
                 id TEXT PRIMARY KEY,
                 user_id INTEGER,
-                product_id INTEGER,
+                product_id INTEGER, -- Can be NULL for wallet charges
                 amount INTEGER NOT NULL,
                 discount_code TEXT,
                 payment_method TEXT NOT NULL,
@@ -119,6 +120,38 @@ class Database:
             )
         """)
 
+        # Create tickets table
+        await self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                message TEXT NOT NULL,
+                status TEXT DEFAULT 'pending', -- 'pending' or 'replied'
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                reply_message TEXT,
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            )
+        """)
+
+        # Create test_accounts table for free test subscription trials
+        await self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS test_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT NOT NULL,
+                is_used INTEGER DEFAULT 0
+            )
+        """)
+
+        # Migrations to ensure columns exist in case db already exists
+        try:
+            await self.conn.execute("ALTER TABLE users ADD COLUMN balance INTEGER DEFAULT 0;")
+        except Exception:
+            pass
+        try:
+            await self.conn.execute("ALTER TABLE users ADD COLUMN test_account_used INTEGER DEFAULT 0;")
+        except Exception:
+            pass
+
         # Indexes for fast querying
         await self.conn.execute("CREATE INDEX IF NOT EXISTS idx_users_id ON users (id);")
         await self.conn.execute("CREATE INDEX IF NOT EXISTS idx_products_category_id ON products (category_id);")
@@ -132,8 +165,8 @@ class Database:
             raise RuntimeError("Database connection is not initialized.")
         async with self._lock:
             async with aiosqlite.connect(backup_filepath) as backup_conn:
-                # Utilizing connection's backup API asynchronously
-                await self.conn.backup(backup_conn)
+                # Under aiosqlite, connection.backup expects a raw standard sqlite3.Connection instance (._conn)
+                await self.conn.backup(backup_conn._conn)
             logger.info(f"Asynchronous hot backup completed successfully to: {backup_filepath}")
 
     # --- Database Operations Helper Methods ---
@@ -149,7 +182,7 @@ class Database:
 
     async def get_user(self, user_id: int):
         async with self._lock:
-            async with self.conn.execute("SELECT id, username, full_name, joined_at, expires_at FROM users WHERE id = ?", (user_id,)) as cursor:
+            async with self.conn.execute("SELECT id, username, full_name, joined_at, expires_at, balance, test_account_used FROM users WHERE id = ?", (user_id,)) as cursor:
                 return await cursor.fetchone()
 
     async def get_all_users_count(self):
@@ -157,6 +190,34 @@ class Database:
             async with self.conn.execute("SELECT COUNT(*) FROM users") as cursor:
                 res = await cursor.fetchone()
                 return res[0] if res else 0
+
+    async def get_all_users(self):
+        async with self._lock:
+            async with self.conn.execute("SELECT id, username, full_name FROM users") as cursor:
+                return await cursor.fetchall()
+
+    # Wallet operations
+    async def get_balance(self, user_id: int) -> int:
+        async with self._lock:
+            async with self.conn.execute("SELECT balance FROM users WHERE id = ?", (user_id,)) as cursor:
+                res = await cursor.fetchone()
+                return res[0] if res else 0
+
+    async def add_balance(self, user_id: int, amount: int):
+        async with self._lock:
+            await self.conn.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (amount, user_id))
+            await self.conn.commit()
+
+    async def deduct_balance(self, user_id: int, amount: int) -> bool:
+        async with self._lock:
+            async with self.conn.execute("SELECT balance FROM users WHERE id = ?", (user_id,)) as cursor:
+                res = await cursor.fetchone()
+                current_balance = res[0] if res else 0
+                if current_balance >= amount:
+                    await self.conn.execute("UPDATE users SET balance = balance - ? WHERE id = ?", (amount, user_id))
+                    await self.conn.commit()
+                    return True
+                return False
 
     # Category operations
     async def add_category(self, name: str):
@@ -286,7 +347,7 @@ class Database:
         async with self._lock:
             async with self.conn.execute(
                 """SELECT o.id, o.user_id, o.product_id, o.amount, o.discount_code, o.payment_method, o.receipt_file_id, o.status, o.created_at, o.delivered_content, p.name
-                   FROM orders o JOIN products p ON o.product_id = p.id WHERE o.id = ?""",
+                   FROM orders o LEFT JOIN products p ON o.product_id = p.id WHERE o.id = ?""",
                 (order_id,)
             ) as cursor:
                 return await cursor.fetchone()
@@ -343,3 +404,66 @@ class Database:
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             async with self.conn.execute("SELECT id, username, expires_at FROM users WHERE expires_at < ? AND expires_at IS NOT NULL", (now_str,)) as cursor:
                 return await cursor.fetchall()
+
+    # Support Tickets operations
+    async def create_ticket(self, user_id: int, message: str) -> int:
+        async with self._lock:
+            async with self.conn.execute(
+                "INSERT INTO tickets (user_id, message) VALUES (?, ?) RETURNING id",
+                (user_id, message)
+            ) as cursor:
+                res = await cursor.fetchone()
+                await self.conn.commit()
+                return res[0] if res else 0
+
+    async def get_pending_tickets(self):
+        async with self._lock:
+            async with self.conn.execute(
+                "SELECT t.id, t.user_id, t.message, t.created_at, u.full_name, u.username FROM tickets t JOIN users u ON t.user_id = u.id WHERE t.status = 'pending'"
+            ) as cursor:
+                return await cursor.fetchall()
+
+    async def reply_ticket(self, ticket_id: int, reply_message: str):
+        async with self._lock:
+            await self.conn.execute(
+                "UPDATE tickets SET status = 'replied', reply_message = ? WHERE id = ?",
+                (reply_message, ticket_id)
+            )
+            await self.conn.commit()
+
+    async def get_ticket(self, ticket_id: int):
+        async with self._lock:
+            async with self.conn.execute("SELECT id, user_id, message, status, reply_message FROM tickets WHERE id = ?", (ticket_id,)) as cursor:
+                return await cursor.fetchone()
+
+    # Free Test Accounts operations
+    async def add_test_account(self, content: str):
+        async with self._lock:
+            await self.conn.execute("INSERT INTO test_accounts (content) VALUES (?)", (content,))
+            await self.conn.commit()
+
+    async def get_test_accounts_count(self) -> int:
+        async with self._lock:
+            async with self.conn.execute("SELECT COUNT(*) FROM test_accounts WHERE is_used = 0") as cursor:
+                res = await cursor.fetchone()
+                return res[0] if res else 0
+
+    async def pop_test_account(self, user_id: int) -> str | None:
+        async with self._lock:
+            # Check if user already used test trial
+            async with self.conn.execute("SELECT test_account_used FROM users WHERE id = ?", (user_id,)) as cursor:
+                res = await cursor.fetchone()
+                used = res[0] if res else 0
+                if used == 1:
+                    return "ALREADY_USED"
+
+            # Fetch and pop an available test account
+            async with self.conn.execute("SELECT id, content FROM test_accounts WHERE is_used = 0 LIMIT 1") as cursor:
+                item = await cursor.fetchone()
+                if item:
+                    item_id, content = item
+                    await self.conn.execute("UPDATE test_accounts SET is_used = 1 WHERE id = ?", (item_id,))
+                    await self.conn.execute("UPDATE users SET test_account_used = 1 WHERE id = ?", (user_id,))
+                    await self.conn.commit()
+                    return content
+                return None

@@ -1,6 +1,7 @@
+import os
 import logging
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.enums import ButtonStyle, ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -22,9 +23,11 @@ async def admin_msg_middleware(handler, event: Message, data: dict):
 
 @admin_router.callback_query.outer_middleware()
 async def admin_call_middleware(handler, event: CallbackQuery, data: dict):
-    if event.from_user.id not in ADMINS:
-        await event.answer("❌ شما دسترسی به این بخش را ندارید!", show_alert=True)
-        return
+    # Protect any callback query starting with adm_ or admin_
+    if event.data and (event.data.startswith("adm_") or event.data.startswith("admin_")):
+        if event.from_user.id not in ADMINS:
+            await event.answer("❌ شما دسترسی به این بخش را ندارید!", show_alert=True)
+            return
     return await handler(event, data)
 
 # FSM States for Admin Panel
@@ -44,6 +47,10 @@ class AdminStates(StatesGroup):
     manual_delivery_content = State()
     rejecting_order_reason = State()
 
+    broadcasting_msg = State()
+    replying_ticket = State()
+    adding_test_account_content = State()
+
 # Inline Loading feedback
 async def show_loading(call: CallbackQuery):
     try:
@@ -59,9 +66,6 @@ def is_admin(user_id: int) -> bool:
 @admin_router.callback_query(F.data == "admin_panel")
 async def admin_panel_cb(call: CallbackQuery, state: FSMContext):
     await state.clear()
-    if not is_admin(call.from_user.id):
-        await call.answer("❌ شما دسترسی به پنل مدیریت ندارید!", show_alert=True)
-        return
     await show_loading(call)
     await call.message.edit_text(
         "⚙️ **به پنل مدیریت ربات خوش آمدید**\n\n"
@@ -519,7 +523,6 @@ async def admin_stats_cb(call: CallbackQuery):
     await show_loading(call)
     total_users = await db.get_all_users_count()
 
-    # Calculate some general sales stats
     async with db._lock:
         async with db.conn.execute("SELECT COUNT(*), SUM(amount) FROM orders WHERE status = 'approved'") as cursor:
             res = await cursor.fetchone()
@@ -540,12 +543,230 @@ async def admin_stats_cb(call: CallbackQuery):
         parse_mode=ParseMode.MARKDOWN
     )
 
+# --- Admin Database Backup ---
+@admin_router.callback_query(F.data == "admin_db_backup")
+async def admin_db_backup_cb(call: CallbackQuery, bot: Bot):
+    await call.answer("⏳ در حال پشتیبان‌گیری زنده و ایمن دیتابیس...", show_alert=False)
+    backup_file = "database/store_backup.db"
+
+    try:
+        # Perform asynchronous hot backup
+        await db.backup(backup_file)
+
+        # Send backup file to admin
+        input_file = FSInputFile(backup_file)
+        await bot.send_document(
+            chat_id=call.from_user.id,
+            document=input_file,
+            caption="💾 **نسخه پشتیبان زنده دیتابیس با موفقیت تهیه شد.**\n\n_(SQLite WAL mode Hot Backup completed)_"
+        )
+        await call.answer("🟢 فایل بک‌آپ برای شما ارسال شد!", show_alert=True)
+    except Exception as e:
+        logger.error(f"Error backing up db: {e}")
+        await call.answer(f"❌ خطا در پشتیبان‌گیری: {e}", show_alert=True)
+    finally:
+        # Clean up backup file
+        if os.path.exists(backup_file):
+            os.remove(backup_file)
+
+# --- Admin Broadcast Messaging ---
+@admin_router.callback_query(F.data == "admin_broadcast")
+async def admin_broadcast_prompt_cb(call: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.broadcasting_msg)
+    await state.update_data(message_id=call.message.message_id)
+    await call.message.edit_text(
+        "📢 **ارسال پیام همگانی به اعضا**\n\n"
+        "لطفاً پیام تبلیغاتی یا اطلاع‌رسانی خود را بفرستید. پیام می‌تواند شامل متن، عکس یا فایل باشد:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 انصراف", callback_data="admin_panel", style=ButtonStyle.DANGER)]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@admin_router.message(AdminStates.broadcasting_msg)
+async def process_broadcast_message(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    menu_message_id = data.get("message_id")
+    await state.clear()
+
+    # Send quick starting feedback
+    progress_msg = await message.reply("⏳ در حال ارسال پیام به کلیه اعضا، لطفاً صبور باشید...")
+
+    users = await db.get_all_users()
+    success_count = 0
+    fail_count = 0
+
+    for u_id, _, _ in users:
+        try:
+            if message.text:
+                await bot.send_message(chat_id=u_id, text=message.text)
+            elif message.photo:
+                await bot.send_photo(chat_id=u_id, photo=message.photo[-1].file_id, caption=message.caption)
+            elif message.document:
+                await bot.send_document(chat_id=u_id, document=message.document.file_id, caption=message.caption)
+            success_count += 1
+            await asyncio.sleep(0.05)  # Flow limit rate
+        except Exception:
+            fail_count += 1
+
+    await progress_msg.delete()
+
+    result_text = (
+        f"📢 **گزارش ارسال پیام همگانی:**\n\n"
+        f"🟢 ارسال موفق: **{success_count} نفر**\n"
+        f"🔴 ناموفق / بلاک شده: **{fail_count} نفر**"
+    )
+    await bot.edit_message_text(
+        chat_id=message.chat.id,
+        message_id=menu_message_id,
+        text=result_text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="admin_panel", style=ButtonStyle.PRIMARY)]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# --- Admin Support Tickets management ---
+@admin_router.callback_query(F.data == "admin_tickets")
+async def admin_tickets_list_cb(call: CallbackQuery):
+    await show_loading(call)
+    tickets = await db.get_pending_tickets()
+
+    text = "📥 **لیست تیکت‌های پشتیبانی بدون پاسخ:**\n\n"
+    keyboard_buttons = []
+
+    if tickets:
+        for t_id, u_id, msg, dt, name, username in tickets:
+            username_str = f"@{username}" if username else "بدون یوزرنیم"
+            text += f"🎫 تیکت `{t_id}` | کاربر: {name} ({username_str})\n💬 متن تیکت: {msg}\n🗓️ تاریخ: {dt}\n\n"
+            keyboard_buttons.append([
+                InlineKeyboardButton(text=f"✍️ پاسخ به تیکت {t_id}", callback_data=f"adm_reply_tkt_{t_id}", style=ButtonStyle.PRIMARY)
+            ])
+    else:
+        text += "🟢 هیچ تیکت در انتظار پاسخی یافت نشد!"
+
+    keyboard_buttons.append([InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="admin_panel", style=ButtonStyle.DANGER)])
+    await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons), parse_mode=ParseMode.MARKDOWN)
+
+@admin_router.callback_query(F.data.startswith("adm_reply_tkt_"))
+async def adm_reply_ticket_cb(call: CallbackQuery, state: FSMContext):
+    ticket_id = int(call.data.split("_")[3])
+    await state.update_data(ticket_id=ticket_id, message_id=call.message.message_id)
+    await state.set_state(AdminStates.replying_ticket)
+
+    await call.message.edit_text(
+        f"✍️ **ارسال پاسخ به تیکت شماره {ticket_id}:**\n\n"
+        "لطفاً پاسخ خود را تایپ و ارسال کنید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 انصراف", callback_data="admin_tickets", style=ButtonStyle.DANGER)]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@admin_router.message(AdminStates.replying_ticket)
+async def process_reply_ticket_message(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    ticket_id = data.get("ticket_id")
+    menu_message_id = data.get("message_id")
+    reply_msg = message.text.strip()
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    await state.clear()
+
+    ticket = await db.get_ticket(ticket_id)
+    if not ticket:
+        return
+
+    user_id = ticket[1]
+    user_orig_msg = ticket[2]
+
+    # Save reply in db
+    await db.reply_ticket(ticket_id, reply_msg)
+
+    # Send notification to user
+    user_notify_text = (
+        f"🎫 **پاسخ تیکت شماره `{ticket_id}` شما ارسال شد!**\n\n"
+        f"❓ **متن تیکت شما:**\n`{user_orig_msg}`\n\n"
+        f"💬 **پاسخ پشتیبان:**\n**{reply_msg}**"
+    )
+    try:
+        await bot.send_message(chat_id=user_id, text=user_notify_text)
+    except Exception:
+        logger.exception(f"Failed to deliver ticket reply to user {user_id}")
+
+    await bot.edit_message_text(
+        chat_id=message.chat.id,
+        message_id=menu_message_id,
+        text="✅ پاسخ تیکت با موفقیت ثبت و برای کاربر ارسال گردید.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 بازگشت به لیست تیکت‌ها", callback_data="admin_tickets", style=ButtonStyle.PRIMARY)]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# --- Admin Free Test Accounts management ---
+@admin_router.callback_query(F.data == "admin_test_accounts")
+async def admin_test_accounts_cb(call: CallbackQuery):
+    await show_loading(call)
+    count = await db.get_test_accounts_count()
+
+    text = (
+        f"🎁 **مدیریت اکانت‌های تست رایگان**\n\n"
+        f"📦 تعداد اکانت‌های تست آماده موجود در انبار: **{count} عدد**\n\n"
+        "کاربران می‌توانند با کلیک روی دکمه هدیه تست رایگان، یک اکانت به صورت آنی دریافت کنند."
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ شارژ انبار اکانت‌های تست", callback_data="adm_addtest_prompt", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="admin_panel", style=ButtonStyle.DANGER)]
+    ])
+    await call.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
+@admin_router.callback_query(F.data == "adm_addtest_prompt")
+async def adm_addtest_prompt_cb(call: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.adding_test_account_content)
+    await state.update_data(message_id=call.message.message_id)
+    await call.message.edit_text(
+        "🎁 **افزودن اکانت تست جدید به انبار:**\n\n"
+        "لطفاً محتوا، اکانت، لایسنس یا کد کانفیگ تست را وارد و ارسال کنید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 انصراف", callback_data="admin_test_accounts", style=ButtonStyle.DANGER)]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+@admin_router.message(AdminStates.adding_test_account_content)
+async def process_adding_test_account(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    menu_message_id = data.get("message_id")
+    content = message.text.strip()
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    await db.add_test_account(content)
+    await state.clear()
+
+    await bot.edit_message_text(
+        chat_id=message.chat.id,
+        message_id=menu_message_id,
+        text="✅ اکانت تست جدید با موفقیت در انبار ثبت گردید.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin_test_accounts", style=ButtonStyle.PRIMARY)]
+        ]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
 
 # --- Order Verification & Delivery Mechanisms ---
 
 @admin_router.callback_query(F.data.startswith("adm_approve_"))
 async def adm_approve_order_cb(call: CallbackQuery, bot: Bot, state: FSMContext):
-    # This handler is called from the Admin Log Channel
     order_id = call.data.split("_")[2]
     order = await db.get_order(order_id)
     if not order:
@@ -555,18 +776,37 @@ async def adm_approve_order_cb(call: CallbackQuery, bot: Bot, state: FSMContext)
     user_id = order[1]
     product_id = order[2]
     amount = order[3]
-    payment_method = order[5]
     product_name = order[10]
 
-    # Check if the product is auto-delivery
+    if product_id is None:
+        # This is a wallet charge order!
+        await db.update_order_status(order_id, "approved")
+        await db.add_balance(user_id, amount)
+
+        user_notify_text = (
+            f"🔋 **تراکنش شارژ حساب شما تایید شد!**\n\n"
+            f"💵 مبلغ **{amount:,} تومان** به موجودی کیف پول دیجیتال شما افزوده گردید."
+        )
+        try:
+            await bot.send_message(chat_id=user_id, text=user_notify_text, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            pass
+
+        # Update Channel log
+        await call.message.edit_caption(
+            caption=f"🟢 **شارژ حساب `{order_id}` تایید و مبلغ {amount:,} تومان به کیف پول کاربر `{user_id}` واریز شد!**",
+            reply_markup=None,
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await call.answer("🟢 شارژ حساب با موفقیت تایید و واریز شد.", show_alert=True)
+        return
+
     product = await db.get_product(product_id)
     auto_deliver = product[5] if product else 0
 
     if auto_deliver:
-        # Deliver auto inventory
         content = await db.pop_inventory_item(product_id)
         if content:
-            # Deliver to user
             await db.update_order_status(order_id, "approved", content)
 
             user_notify_text = (
@@ -574,32 +814,28 @@ async def adm_approve_order_cb(call: CallbackQuery, bot: Bot, state: FSMContext)
                 f"🛍️ **محصول:** {product_name}\n"
                 f"⚡ **محتوای لایسنس / اشتراک شما:**\n\n"
                 f"`{content}`\n\n"
-                "سپاس از خرید شما! مجدداً از منوی اصلی در خدمت شما هستیم."
+                "کانفیگ یا اکانت بالا هم‌اکنون فعال است. سپاس از خرید شما!"
             )
             try:
                 await bot.send_message(chat_id=user_id, text=user_notify_text, parse_mode=ParseMode.MARKDOWN)
             except Exception:
                 logger.exception(f"Failed to send delivery message to user {user_id}")
 
-            # Update the message in the Admin Log Channel to show finalized state
             await call.message.edit_caption(
                 caption=f"🟢 **سفارش `{order_id}` با موفقیت تایید و به صورت خودکار تحویل شد!**\n\n👤 کاربر: `{user_id}`\n💵 مبلغ: {amount:,} تومان",
                 reply_markup=None,
                 parse_mode=ParseMode.MARKDOWN
             )
         else:
-            # No content in inventory! Notify admin to do manual delivery
             await call.answer("⚠️ انبار این محصول خالی است! باید تحویل دستی انجام دهید.", show_alert=True)
             await ask_manual_delivery(call, bot, state, order_id, user_id, product_name)
     else:
-        # Manual delivery required
         await ask_manual_delivery(call, bot, state, order_id, user_id, product_name)
 
 async def ask_manual_delivery(call: CallbackQuery, bot: Bot, state: FSMContext, order_id: str, user_id: int, product_name: str):
     await state.update_data(order_id=order_id, user_id=user_id, product_name=product_name, admin_msg_id=call.message.message_id)
     await state.set_state(AdminStates.manual_delivery_content)
 
-    # Instruct admin in their direct messages
     admin_id = call.from_user.id
     await bot.send_message(
         chat_id=admin_id,
@@ -610,19 +846,16 @@ async def ask_manual_delivery(call: CallbackQuery, bot: Bot, state: FSMContext, 
             "لطفاً فایل، متن لایسنس، عکس یا مشخصات اکانت را جهت ارسال برای کاربر در پی‌وی بفرستید:"
         )
     )
-    # Temporary answer to channel callback
     await call.answer("📝 دستورالعمل تحویل دستی به پی‌وی شما ارسال شد.", show_alert=True)
 
 @admin_router.message(AdminStates.manual_delivery_content)
 async def process_manual_delivery_content(message: Message, state: FSMContext, bot: Bot):
-    # This runs in admin's private chat
     data = await state.get_data()
     order_id = data.get("order_id")
     user_id = data.get("user_id")
     product_name = data.get("product_name")
     admin_msg_id = data.get("admin_msg_id")
 
-    # We can send any content types (photo, video, document, text) directly to user
     await db.update_order_status(order_id, "approved", message.text or "[محتوای مدیا]")
 
     user_notify_prefix = (
@@ -643,7 +876,6 @@ async def process_manual_delivery_content(message: Message, state: FSMContext, b
 
         await message.reply("✅ محصول با موفقیت به کاربر تحویل داده شد و لاگ تکمیل گردید.")
 
-        # Update Channel log to show approved state with a PV link to user
         user_info = await bot.get_chat(user_id)
         pv_link = f"https://t.me/{user_info.username}" if user_info.username else f"tg://user?id={user_id}"
 
@@ -709,7 +941,6 @@ async def process_reject_reason(message: Message, state: FSMContext, bot: Bot):
         await bot.send_message(chat_id=user_id, text=user_notify_text)
         await message.reply("✅ سفارش رد شد و دلیل آن به کاربر ابلاغ گردید.")
 
-        # Update channel log
         await bot.edit_message_caption(
             chat_id=ADMIN_LOG_CHANNEL,
             message_id=admin_msg_id,

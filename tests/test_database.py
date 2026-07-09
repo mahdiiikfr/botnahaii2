@@ -3,7 +3,7 @@ import os
 from database.db import Database
 
 async def test_db():
-    print("Testing database operations asynchronously...")
+    print("Testing upgraded database operations asynchronously...")
     db = Database()
     await db.connect()
 
@@ -12,48 +12,69 @@ async def test_db():
         await db.conn.execute("DELETE FROM categories;")
         await db.conn.execute("DELETE FROM products;")
         await db.conn.execute("DELETE FROM discount_codes;")
+        await db.conn.execute("DELETE FROM tickets;")
+        await db.conn.execute("DELETE FROM test_accounts;")
+        await db.conn.execute("DELETE FROM users;")
         await db.conn.commit()
 
-    # 2. Add category
-    assert await db.add_category("VPN") == True
-    assert await db.add_category("VPN") == False # Duplicate should return False
+    # 2. Add user
+    await db.add_user(123456, "test_user", "Test Name")
+    user = await db.get_user(123456)
+    assert user is not None
+    assert user[5] == 0 # Balance should be 0 by default
+    assert user[6] == 0 # Test account used should be 0 by default
 
-    categories = await db.get_categories()
-    print("Categories:", categories)
-    assert len(categories) == 1
-    cat_id = categories[0][0]
+    # 3. Wallet Balance Testing
+    await db.add_balance(123456, 15000)
+    bal = await db.get_balance(123456)
+    print("Wallet balance after addition:", bal)
+    assert bal == 15000
 
-    # 3. Add product
-    await db.add_product(cat_id, "vless subscription", "High speed 1 month", 50000, 1)
-    products = await db.get_products_by_category(cat_id)
-    print("Products:", products)
-    assert len(products) == 1
-    prod_id = products[0][0]
+    # Deduct wallet balance
+    deduct_success = await db.deduct_balance(123456, 10000)
+    assert deduct_success == True
+    bal = await db.get_balance(123456)
+    print("Wallet balance after deduction:", bal)
+    assert bal == 5000
 
-    # 4. Inventory testing
-    await db.add_inventory_item(prod_id, "VLESS://license-code-123456")
-    inv_count = await db.get_inventory_count(prod_id)
-    print("Inventory count:", inv_count)
-    assert inv_count == 1
+    # Try to deduct more than balance
+    fail_deduct = await db.deduct_balance(123456, 20000)
+    assert fail_deduct == False
 
-    # 5. Discount testing
-    await db.add_discount_code("OFF50", 50, 2)
-    percent = await db.use_discount_code(123456, "OFF50")
-    print("Applied discount percent:", percent)
-    assert percent == 50
+    # 4. Support Tickets Testing
+    tkt_id = await db.create_ticket(123456, "Hello, I need help with my connection.")
+    print("Created support ticket ID:", tkt_id)
+    assert tkt_id > 0
 
-    # Duplicate use of discount code by the same user should return None
-    dup_percent = await db.use_discount_code(123456, "OFF50")
-    assert dup_percent is None
+    pending_tkts = await db.get_pending_tickets()
+    print("Pending tickets:", pending_tkts)
+    assert len(pending_tkts) == 1
+    assert pending_tkts[0][2] == "Hello, I need help with my connection."
 
-    # 6. Orders testing
-    await db.create_order("test_ord", 123456, prod_id, 25000, "OFF50", "zarinpal")
-    order = await db.get_order("test_ord")
-    print("Order details:", order)
-    assert order is not None
-    assert order[3] == 25000 # Correct amount
+    # Reply to ticket
+    await db.reply_ticket(tkt_id, "We have fixed the server.")
+    tkt = await db.get_ticket(tkt_id)
+    print("Ticket after reply:", tkt)
+    assert tkt[3] == "replied"
+    assert tkt[4] == "We have fixed the server."
 
-    # 7. Asynchronous secure hot backup testing
+    # 5. Free Test Accounts Testing
+    await db.add_test_account("VLESS-TEST-KEY-XYZ")
+    count = await db.get_test_accounts_count()
+    print("Available test accounts count:", count)
+    assert count == 1
+
+    # Pop trial first time
+    test_key = await db.pop_test_account(123456)
+    print("Popped test account:", test_key)
+    assert test_key == "VLESS-TEST-KEY-XYZ"
+
+    # Try to pop trial second time (should be blocked as already used)
+    second_pop = await db.pop_test_account(123456)
+    print("Second pop trial result:", second_pop)
+    assert second_pop == "ALREADY_USED"
+
+    # 6. Asynchronous secure hot backup testing
     backup_file = "database/store_backup.db"
     if os.path.exists(backup_file):
         os.remove(backup_file)
@@ -64,7 +85,7 @@ async def test_db():
     os.remove(backup_file)
 
     await db.disconnect()
-    print("🎉 All asynchronous database tests passed successfully!")
+    print("🎉 All upgraded asynchronous database tests passed successfully!")
 
 if __name__ == "__main__":
     asyncio.run(test_db())

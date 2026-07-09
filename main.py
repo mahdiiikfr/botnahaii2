@@ -72,7 +72,7 @@ async def handle_zarinpal_callback(request: web.Request) -> web.Response:
 
     user_id = order[1]
     amount = order[3]
-    product_name = order[10]
+    product_name = order[10] if order[10] else "شارژ کیف پول"
     order_status = order[7]
 
     if order_status != "pending":
@@ -89,7 +89,40 @@ async def handle_zarinpal_callback(request: web.Request) -> web.Response:
 
         if success:
             # Payment verified!
-            # Check delivery type
+
+            # Check if this is a wallet charge order!
+            if order[2] is None:
+                await db.update_order_status(order_id, "approved")
+                await db.add_balance(user_id, amount)
+
+                user_text = (
+                    f"🔋 **تراکنش شارژ کیف پول با موفقیت تایید شد!**\n\n"
+                    f"💵 مبلغ **{amount:,} تومان** به اعتبار کیف پول شما افزوده شد."
+                )
+                try:
+                    await bot.send_message(chat_id=user_id, text=user_text, parse_mode=ParseMode.MARKDOWN)
+                except Exception:
+                    pass
+
+                admin_text = (
+                    f"🔋 **شارژ موفق آنلاین حساب کاربری!**\n\n"
+                    f"👤 کاربر: `{user_id}`\n"
+                    f"💵 مبلغ شارژ: {amount:,} تومان\n"
+                    f"🆔 کد پیگیری سفارش: `{order_id}`\n"
+                    f"🧾 شماره تراکنش (Ref ID): `{ref_id_or_err}`"
+                )
+                try:
+                    await bot.send_message(chat_id=ADMIN_LOG_CHANNEL, text=admin_text, parse_mode=ParseMode.MARKDOWN)
+                except Exception:
+                    pass
+
+                return web.Response(
+                    text=f"<html><body style='font-family:tahoma;text-align:center;color:green;'><h2>🎉 کیف پول شما با موفقیت شارژ شد!</h2><p>مبلغ: {amount:,} تومان</p><p>کد پیگیری: {order_id}</p></body></html>",
+                    content_type="text/html",
+                    charset="utf-8"
+                )
+
+            # Otherwise, this is a standard product purchase order
             product = await db.get_product(order[2])
             auto_deliver = product[5] if product else 0
 
@@ -216,11 +249,9 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
 
     # Register Middlewares
-    # Rate limiter protecting against spamming
     dp.message.middleware(AntiSpamMiddleware(limit=0.5))
     dp.callback_query.middleware(AntiSpamMiddleware(limit=0.5))
 
-    # Mandatory channel joining validator
     dp.message.middleware(CheckJoinMiddleware())
     dp.callback_query.middleware(CheckJoinMiddleware())
 
