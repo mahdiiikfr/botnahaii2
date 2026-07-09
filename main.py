@@ -10,6 +10,7 @@ from config.config import BOT_TOKEN, ADMINS, ADMIN_LOG_CHANNEL, WEB_PORT
 from database.db import Database
 from handlers.user import user_router
 from handlers.admin import admin_router
+from utils.referral import process_referral_reward
 from middlewares.antispam import AntiSpamMiddleware
 from middlewares.check_join import CheckJoinMiddleware
 
@@ -22,21 +23,79 @@ logger = logging.getLogger(__name__)
 
 # --- Safe admin logger utility ---
 async def send_admin_log(bot: Bot, text: str):
-    """Sends log text to the Admin Channel, falling back directly to main Admin PV if channel is inaccessible."""
-    sent = False
-    try:
-        await bot.send_message(chat_id=ADMIN_LOG_CHANNEL, text=text, parse_mode=ParseMode.HTML)
-        sent = True
-    except Exception as e:
-        logger.error(f"Failed to post log to dedicated channel {ADMIN_LOG_CHANNEL}: {e}")
-
-    if not sent and ADMINS:
+    """Sends log text directly to the PV of all registered admins."""
+    for admin_id in ADMINS:
         try:
-            fallback_text = text + "\n\n⚠️ <b>توجه سیستم: ارسال به کانال لاگ با خطا مواجه شد و این لاگ به پی‌وی ادمین ارسال گردید.</b>"
-            await bot.send_message(chat_id=ADMINS[0], text=fallback_text, parse_mode=ParseMode.HTML)
-            logger.info("Admin log fallback to PV successful.")
-        except Exception as e_pv:
-            logger.error(f"Failed fallback log delivery to main admin {ADMINS[0]} PV: {e_pv}")
+            await bot.send_message(chat_id=admin_id, text=text, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logger.error(f"Failed to send admin log to admin {admin_id}: {e}")
+
+# --- Background Order Auto-Cancel Task ---
+async def auto_cancel_orders_task(bot: Bot, db: Database):
+    """Background task to periodically auto-cancel pending orders that have timed out."""
+    try:
+        from datetime import datetime, timedelta
+        # Get all pending orders
+        async with db._lock:
+            # Let's retrieve all pending orders
+            async with db.conn.execute(
+                """SELECT o.id, o.user_id, o.amount, o.payment_method, o.receipt_file_id, o.created_at, p.name
+                   FROM orders o LEFT JOIN products p ON o.product_id = p.id WHERE o.status = 'pending'"""
+            ) as cursor:
+                pending_orders = await cursor.fetchall()
+
+        now = datetime.now()
+        for ord_id, user_id, amount, pay_method, receipt_file_id, created_at_str, product_name in pending_orders:
+            try:
+                created_at = datetime.strptime(created_at_str, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                continue
+
+            should_cancel = False
+            cancel_reason = ""
+
+            if pay_method == "zarinpal":
+                # Cancel ZarinPal orders after 10 minutes
+                if now - created_at > timedelta(minutes=10):
+                    should_cancel = True
+                    cancel_reason = "عدم پرداخت درگاه آنلاین ظرف مدت ۱۰ دقیقه"
+            elif pay_method == "card":
+                # Cancel card orders after 1 hour if no receipt has been uploaded
+                if receipt_file_id is None and (now - created_at > timedelta(hours=1)):
+                    should_cancel = True
+                    cancel_reason = "عدم آپلود فیش کارت به کارت ظرف مدت ۱ ساعت"
+
+            if should_cancel:
+                await db.update_order_status(ord_id, "rejected")
+
+                prod_title = product_name if product_name else "شارژ کیف پول"
+                user_notify_text = (
+                    f"🔴 **سفارش شما به دلیل اتمام مهلت زمان پرداخت لغو شد!**\n\n"
+                    f"📦 **محصول/سفارش:** {prod_title}\n"
+                    f"🆔 **کد پیگیری:** `{ord_id}`\n"
+                    f"💵 **مبلغ:** {amount:,} تومان\n"
+                    f"❌ **علت لغو خودکار:** {cancel_reason}\n\n"
+                    "در صورت تمایل می‌توانید مجدداً اقدام به ثبت سفارش جدید نمایید."
+                )
+                try:
+                    await bot.send_message(chat_id=user_id, text=user_notify_text, parse_mode=ParseMode.MARKDOWN)
+                except Exception:
+                    pass
+
+                # Also alert admins in PV about the auto-canceled order
+                admin_alert_text = (
+                    f"⚠️ **سفارش به صورت خودکار لغو (منقضی) شد**\n\n"
+                    f"👤 کاربر: `{user_id}`\n"
+                    f"📦 محصول: {prod_title}\n"
+                    f"💵 مبلغ: {amount:,} تومان\n"
+                    f"🆔 کد پیگیری: `{ord_id}`\n"
+                    f"❌ علت لغو: {cancel_reason}"
+                )
+                await send_admin_log(bot, admin_alert_text)
+
+    except Exception as e:
+        logger.error(f"Error checking pending orders expiration: {e}")
+
 
 # --- Background Subscriptions Task ---
 async def check_user_subscriptions_task(bot: Bot, db: Database):
@@ -144,6 +203,7 @@ async def handle_zarinpal_callback(request: web.Request) -> web.Response:
                 content = await db.pop_inventory_item(order[2])
                 if content:
                     await db.update_order_status(order_id, "approved", content)
+                    await process_referral_reward(bot, db, order_id)
 
                     user_text = (
                         f"✅ <b>پرداخت آنلاین شما با موفقیت تایید شد!</b>\n\n"
@@ -175,6 +235,7 @@ async def handle_zarinpal_callback(request: web.Request) -> web.Response:
                 else:
                     # Auto deliver but inventory is empty
                     await db.update_order_status(order_id, "approved")
+                    await process_referral_reward(bot, db, order_id)
                     user_text = (
                         f"✅ <b>پرداخت آنلاین شما با موفقیت تایید شد!</b>\n\n"
                         f"🛍️ <b>محصول:</b> {product_name}\n"
@@ -203,6 +264,7 @@ async def handle_zarinpal_callback(request: web.Request) -> web.Response:
             else:
                 # Manual delivery
                 await db.update_order_status(order_id, "approved")
+                await process_referral_reward(bot, db, order_id)
                 user_text = (
                     f"✅ <b>پرداخت آنلاین شما با موفقیت تایید شد!</b>\n\n"
                     f"🛍️ <b>محصول:</b> {product_name}\n"
@@ -308,7 +370,7 @@ async def main():
     dp.include_router(admin_router)
     dp.include_router(user_router)
 
-    # Initialize Scheduler for background subscription check
+    # Initialize Scheduler for background tasks
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         check_user_subscriptions_task,
@@ -316,8 +378,14 @@ async def main():
         hours=12,
         args=[bot, db]
     )
+    scheduler.add_job(
+        auto_cancel_orders_task,
+        "interval",
+        minutes=1,
+        args=[bot, db]
+    )
     scheduler.start()
-    logger.info("Background subscription scheduler task started.")
+    logger.info("Background subscription and order auto-cancel scheduler tasks started.")
 
     # Setup AIOHTTP Web Server for ZarinPal callbacks running side-by-side
     app = web.Application()

@@ -1,5 +1,6 @@
 import os
 import logging
+import html
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.enums import ButtonStyle, ParseMode
@@ -9,6 +10,7 @@ from aiogram.fsm.state import StatesGroup, State
 from database.db import Database
 from config.config import ADMINS, ADMIN_LOG_CHANNEL
 from keyboards.inline import get_admin_panel_keyboard
+from utils.referral import process_referral_reward
 
 logger = logging.getLogger(__name__)
 admin_router = Router()
@@ -622,13 +624,15 @@ async def admin_tickets_list_cb(call: CallbackQuery):
     await show_loading(call)
     tickets = await db.get_pending_tickets()
 
-    text = "📥 **لیست تیکت‌های پشتیبانی بدون پاسخ:**\n\n"
+    text = "📥 <b>لیست تیکت‌های پشتیبانی بدون پاسخ:</b>\n\n"
     keyboard_buttons = []
 
     if tickets:
         for t_id, u_id, msg, dt, name, username in tickets:
-            username_str = f"@{username}" if username else "بدون یوزرنیم"
-            text += f"🎫 تیکت `{t_id}` | کاربر: {name} ({username_str})\n💬 متن تیکت: {msg}\n🗓️ تاریخ: {dt}\n\n"
+            escaped_name = html.escape(name or "کاربر")
+            escaped_msg = html.escape(msg or "")
+            username_str = f"@{html.escape(username)}" if username else "بدون یوزرنیم"
+            text += f"🎫 تیکت <code>{t_id}</code> | کاربر: {escaped_name} ({username_str})\n💬 متن تیکت: {escaped_msg}\n🗓️ تاریخ: {dt}\n\n"
             keyboard_buttons.append([
                 InlineKeyboardButton(text=f"✍️ پاسخ به تیکت {t_id}", callback_data=f"adm_reply_tkt_{t_id}", style=ButtonStyle.PRIMARY)
             ])
@@ -636,7 +640,7 @@ async def admin_tickets_list_cb(call: CallbackQuery):
         text += "🟢 هیچ تیکت در انتظار پاسخی یافت نشد!"
 
     keyboard_buttons.append([InlineKeyboardButton(text="🔙 بازگشت به پنل مدیریت", callback_data="admin_panel", style=ButtonStyle.DANGER)])
-    await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons), parse_mode=ParseMode.MARKDOWN)
+    await call.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons), parse_mode=ParseMode.HTML)
 
 @admin_router.callback_query(F.data.startswith("adm_reply_tkt_"))
 async def adm_reply_ticket_cb(call: CallbackQuery, state: FSMContext):
@@ -763,6 +767,15 @@ async def adm_approve_order_cb(call: CallbackQuery, bot: Bot, state: FSMContext)
         await call.answer("❌ این سفارش دیگر وجود ندارد!", show_alert=True)
         return
 
+    status = order[7]
+    if status != 'pending':
+        await call.answer(f"❌ این سفارش قبلاً پردازش شده است! وضعیت: {status}", show_alert=True)
+        try:
+            await call.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+
     user_id = order[1]
     product_id = order[2]
     amount = order[3]
@@ -774,19 +787,19 @@ async def adm_approve_order_cb(call: CallbackQuery, bot: Bot, state: FSMContext)
         await db.add_balance(user_id, amount)
 
         user_notify_text = (
-            f"🔋 **تراکنش شارژ حساب شما تایید شد!**\n\n"
-            f"💵 مبلغ **{amount:,} تومان** به موجودی کیف پول دیجیتال شما افزوده گردید."
+            f"🔋 <b>تراکنش شارژ حساب شما تایید شد!</b>\n\n"
+            f"💵 مبلغ <b>{amount:,} تومان</b> به موجودی کیف پول دیجیتال شما افزوده گردید."
         )
         try:
-            await bot.send_message(chat_id=user_id, text=user_notify_text, parse_mode=ParseMode.MARKDOWN)
+            await bot.send_message(chat_id=user_id, text=user_notify_text, parse_mode=ParseMode.HTML)
         except Exception:
             pass
 
-        # Update Channel log
+        # Update log message directly in active Admin PV
         await call.message.edit_caption(
-            caption=f"🟢 **شارژ حساب `{order_id}` تایید و مبلغ {amount:,} تومان به کیف پول کاربر `{user_id}` واریز شد!**",
+            caption=f"🟢 <b>شارژ حساب <code>{order_id}</code> تایید و مبلغ {amount:,} تومان به کیف پول کاربر <code>{user_id}</code> واریز شد!</b>",
             reply_markup=None,
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.HTML
         )
         await call.answer("🟢 شارژ حساب با موفقیت تایید و واریز شد.", show_alert=True)
         return
@@ -798,23 +811,24 @@ async def adm_approve_order_cb(call: CallbackQuery, bot: Bot, state: FSMContext)
         content = await db.pop_inventory_item(product_id)
         if content:
             await db.update_order_status(order_id, "approved", content)
+            await process_referral_reward(bot, db, order_id)
 
             user_notify_text = (
-                f"✅ **پرداخت سفارش `{order_id}` شما توسط مدیریت تایید شد!**\n\n"
-                f"🛍️ **محصول:** {product_name}\n"
-                f"⚡ **محتوای لایسنس / اشتراک شما:**\n\n"
-                f"`{content}`\n\n"
+                f"✅ <b>پرداخت سفارش <code>{order_id}</code> شما توسط مدیریت تایید شد!</b>\n\n"
+                f"🛍️ <b>محصول:</b> {html.escape(product_name)}\n"
+                f"⚡ <b>محتوای لایسنس / اشتراک شما:</b>\n\n"
+                f"<code>{html.escape(content)}</code>\n\n"
                 "کانفیگ یا اکانت بالا هم‌اکنون فعال است. سپاس از خرید شما!"
             )
             try:
-                await bot.send_message(chat_id=user_id, text=user_notify_text, parse_mode=ParseMode.MARKDOWN)
+                await bot.send_message(chat_id=user_id, text=user_notify_text, parse_mode=ParseMode.HTML)
             except Exception:
                 logger.exception(f"Failed to send delivery message to user {user_id}")
 
             await call.message.edit_caption(
-                caption=f"🟢 **سفارش `{order_id}` با موفقیت تایید و به صورت خودکار تحویل شد!**\n\n👤 کاربر: `{user_id}`\n💵 مبلغ: {amount:,} تومان",
+                caption=f"🟢 <b>سفارش <code>{order_id}</code> با موفقیت تایید و به صورت خودکار تحویل شد!</b>\n\n👤 کاربر: <code>{user_id}</code>\n💵 مبلغ: {amount:,} تومان",
                 reply_markup=None,
-                parse_mode=ParseMode.MARKDOWN
+                parse_mode=ParseMode.HTML
             )
         else:
             await call.answer("⚠️ انبار این محصول خالی است! باید تحویل دستی انجام دهید.", show_alert=True)
@@ -823,18 +837,25 @@ async def adm_approve_order_cb(call: CallbackQuery, bot: Bot, state: FSMContext)
         await ask_manual_delivery(call, bot, state, order_id, user_id, product_name)
 
 async def ask_manual_delivery(call: CallbackQuery, bot: Bot, state: FSMContext, order_id: str, user_id: int, product_name: str):
-    await state.update_data(order_id=order_id, user_id=user_id, product_name=product_name, admin_msg_id=call.message.message_id)
+    await state.update_data(
+        order_id=order_id,
+        user_id=user_id,
+        product_name=product_name,
+        admin_chat_id=call.message.chat.id,
+        admin_msg_id=call.message.message_id
+    )
     await state.set_state(AdminStates.manual_delivery_content)
 
     admin_id = call.from_user.id
     await bot.send_message(
         chat_id=admin_id,
         text=(
-            f"✍️ **تحویل دستی سفارش `{order_id}`**\n\n"
-            f"👤 کاربر مقصد: `{user_id}`\n"
-            f"📦 محصول خریداری شده: **{product_name}**\n\n"
+            f"✍️ <b>تحویل دستی سفارش <code>{order_id}</code></b>\n\n"
+            f"👤 کاربر مقصد: <code>{user_id}</code>\n"
+            f"📦 محصول خریداری شده: <b>{html.escape(product_name)}</b>\n\n"
             "لطفاً فایل، متن لایسنس، عکس یا مشخصات اکانت را جهت ارسال برای کاربر در پی‌وی بفرستید:"
-        )
+        ),
+        parse_mode=ParseMode.HTML
     )
     await call.answer("📝 دستورالعمل تحویل دستی به پی‌وی شما ارسال شد.", show_alert=True)
 
@@ -844,42 +865,46 @@ async def process_manual_delivery_content(message: Message, state: FSMContext, b
     order_id = data.get("order_id")
     user_id = data.get("user_id")
     product_name = data.get("product_name")
+    admin_chat_id = data.get("admin_chat_id", message.chat.id)
     admin_msg_id = data.get("admin_msg_id")
 
     await db.update_order_status(order_id, "approved", message.text or "[محتوای مدیا]")
+    await process_referral_reward(bot, db, order_id)
 
     user_notify_prefix = (
-        f"✅ **پرداخت سفارش `{order_id}` شما تایید شد!**\n"
-        f"🛍️ **محصول:** {product_name}\n"
-        "📦 **محتوای ارسال شده توسط پشتیبانی:**\n\n"
+        f"✅ <b>پرداخت سفارش <code>{order_id}</code> شما تایید شد!</b>\n"
+        f"🛍️ <b>محصول:</b> {html.escape(product_name)}\n"
+        "📦 <b>محتوای ارسال شده توسط پشتیبانی:</b>\n\n"
     )
 
     try:
         if message.text:
-            await bot.send_message(chat_id=user_id, text=user_notify_prefix + message.text)
+            await bot.send_message(chat_id=user_id, text=user_notify_prefix + html.escape(message.text), parse_mode=ParseMode.HTML)
         elif message.photo:
-            await bot.send_photo(chat_id=user_id, photo=message.photo[-1].file_id, caption=user_notify_prefix)
+            await bot.send_photo(chat_id=user_id, photo=message.photo[-1].file_id, caption=user_notify_prefix, parse_mode=ParseMode.HTML)
         elif message.document:
-            await bot.send_document(chat_id=user_id, document=message.document.file_id, caption=user_notify_prefix)
+            await bot.send_document(chat_id=user_id, document=message.document.file_id, caption=user_notify_prefix, parse_mode=ParseMode.HTML)
         elif message.video:
-            await bot.send_video(chat_id=user_id, video=message.video.file_id, caption=user_notify_prefix)
+            await bot.send_video(chat_id=user_id, video=message.video.file_id, caption=user_notify_prefix, parse_mode=ParseMode.HTML)
 
         await message.reply("✅ محصول با موفقیت به کاربر تحویل داده شد و لاگ تکمیل گردید.")
 
         user_info = await bot.get_chat(user_id)
         pv_link = f"https://t.me/{user_info.username}" if user_info.username else f"tg://user?id={user_id}"
+        escaped_full_name = html.escape(user_info.full_name or "کاربر تلگرام")
 
-        await bot.edit_message_caption(
-            chat_id=ADMIN_LOG_CHANNEL,
-            message_id=admin_msg_id,
-            caption=(
-                f"🟢 **سفارش `{order_id}` به صورت دستی تحویل داده شد!**\n\n"
-                f"👤 کاربر: [{user_info.full_name}]({pv_link})\n"
-                f"📦 محصول: {product_name}"
-            ),
-            reply_markup=None,
-            parse_mode=ParseMode.MARKDOWN
-        )
+        if admin_msg_id:
+            await bot.edit_message_caption(
+                chat_id=admin_chat_id,
+                message_id=admin_msg_id,
+                caption=(
+                    f"🟢 <b>سفارش <code>{order_id}</code> به صورت دستی تحویل داده شد!</b>\n\n"
+                    f"👤 کاربر: <a href='{pv_link}'>{escaped_full_name}</a>\n"
+                    f"📦 محصول: {html.escape(product_name)}"
+                ),
+                reply_markup=None,
+                parse_mode=ParseMode.HTML
+            )
     except Exception as e:
         logger.error(f"Error in manual delivery: {e}")
         await message.reply(f"❌ خطا در ارسال محصول به کاربر: {e}")
@@ -896,18 +921,33 @@ async def adm_reject_order_cb(call: CallbackQuery, bot: Bot, state: FSMContext):
         await call.answer("❌ سفارش یافت نشد.", show_alert=True)
         return
 
+    status = order[7]
+    if status != 'pending':
+        await call.answer(f"❌ این سفارش قبلاً پردازش شده است! وضعیت: {status}", show_alert=True)
+        try:
+            await call.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+
     user_id = order[1]
     admin_id = call.from_user.id
 
-    await state.update_data(order_id=order_id, user_id=user_id, admin_msg_id=call.message.message_id)
+    await state.update_data(
+        order_id=order_id,
+        user_id=user_id,
+        admin_chat_id=call.message.chat.id,
+        admin_msg_id=call.message.message_id
+    )
     await state.set_state(AdminStates.rejecting_order_reason)
 
     await bot.send_message(
         chat_id=admin_id,
         text=(
-            f"🔴 **رد کردن سفارش `{order_id}`**\n\n"
+            f"🔴 <b>رد کردن سفارش <code>{order_id}</code></b>\n\n"
             "لطفاً دلیل رد کردن این رسید پرداخت را ارسال کنید تا برای کاربر فرستاده شود:"
-        )
+        ),
+        parse_mode=ParseMode.HTML
     )
     await call.answer("📝 درخواست ثبت دلیل رد رسید به پی‌وی شما ارسال شد.", show_alert=True)
 
@@ -916,32 +956,34 @@ async def process_reject_reason(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     order_id = data.get("order_id")
     user_id = data.get("user_id")
+    admin_chat_id = data.get("admin_chat_id", message.chat.id)
     admin_msg_id = data.get("admin_msg_id")
     reason = message.text.strip()
 
     await db.update_order_status(order_id, "rejected")
 
     user_notify_text = (
-        f"🔴 **رسید پرداخت سفارش `{order_id}` شما توسط مدیریت رد شد!**\n\n"
-        f"❌ **علت رد شدن:** {reason}\n\n"
+        f"🔴 <b>رسید پرداخت سفارش <code>{order_id}</code> شما توسط مدیریت رد شد!</b>\n\n"
+        f"❌ <b>علت رد شدن:</b> {html.escape(reason)}\n\n"
         "در صورت بروز اشتباه، مجدداً می‌توانید خرید جدید ثبت کنید یا با پشتیبانی ارتباط برقرار نمایید."
     )
 
     try:
-        await bot.send_message(chat_id=user_id, text=user_notify_text)
+        await bot.send_message(chat_id=user_id, text=user_notify_text, parse_mode=ParseMode.HTML)
         await message.reply("✅ سفارش رد شد و دلیل آن به کاربر ابلاغ گردید.")
 
-        await bot.edit_message_caption(
-            chat_id=ADMIN_LOG_CHANNEL,
-            message_id=admin_msg_id,
-            caption=(
-                f"🔴 **سفارش `{order_id}` رد شد!**\n\n"
-                f"👤 شناسه کاربر: `{user_id}`\n"
-                f"❌ علت رد شدن: {reason}"
-            ),
-            reply_markup=None,
-            parse_mode=ParseMode.MARKDOWN
-        )
+        if admin_msg_id:
+            await bot.edit_message_caption(
+                chat_id=admin_chat_id,
+                message_id=admin_msg_id,
+                caption=(
+                    f"🔴 <b>سفارش <code>{order_id}</code> رد شد!</b>\n\n"
+                    f"👤 شناسه کاربر: <code>{user_id}</code>\n"
+                    f"❌ علت رد شدن: {html.escape(reason)}"
+                ),
+                reply_markup=None,
+                parse_mode=ParseMode.HTML
+            )
     except Exception as e:
         logger.error(f"Error in rejecting order: {e}")
         await message.reply(f"❌ خطا در ابلاغ رد سفارش: {e}")

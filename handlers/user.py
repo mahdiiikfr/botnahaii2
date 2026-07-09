@@ -18,6 +18,7 @@ from keyboards.inline import (
     get_card_payment_keyboard
 )
 from utils.zarinpal import ZarinPal
+from utils.referral import process_referral_reward
 
 logger = logging.getLogger(__name__)
 user_router = Router()
@@ -46,20 +47,57 @@ def get_welcome_text(full_name: str) -> str:
         "💎 <b>رابط کاربری ربات تک‌صفحه‌ای است؛</b> با استفاده از دکمه‌های شیشه‌ای رنگارنگ زیر به راحتی و با سرعت بالا خرید خود را نهایی کنید! 👇"
     )
 
-@user_router.message(F.text == "/start")
+@user_router.message(F.text.startswith("/start"))
 async def start_cmd(message: Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
     username = message.from_user.username or ""
     full_name = message.from_user.full_name or ""
 
-    await db.add_user(user_id, username, full_name)
+    # Parse referral code if present
+    referred_by = None
+    args = message.text.split()
+    if len(args) > 1 and args[1].startswith("ref_"):
+        try:
+            ref_id_str = args[1].replace("ref_", "")
+            if ref_id_str.isdigit():
+                referred_by = int(ref_id_str)
+        except Exception:
+            pass
+
+    await db.add_user(user_id, username, full_name, referred_by=referred_by)
 
     await message.answer(
         get_welcome_text(full_name),
         reply_markup=get_main_keyboard(user_id),
         parse_mode=ParseMode.HTML
     )
+
+# --- Referral Program Handler ---
+@user_router.callback_query(F.data == "referral_program")
+async def referral_program_cb(call: CallbackQuery, bot: Bot):
+    await show_loading(call)
+    user_id = call.from_user.id
+
+    bot_info = await bot.get_me()
+    bot_username = bot_info.username
+    ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+
+    referred_count = await db.get_referred_count(user_id)
+
+    ref_text = (
+        f"👥 <b>برنامه کسب درآمد و دعوت از دوستان</b>\n\n"
+        f"با دعوت از دوستان خود به ربات، به ازای هر خریدی که آن‌ها انجام می‌دهند، مبلغ <b>۱۰,۰۰۰ تومان</b> به عنوان هدیه به کیف پول شما اضافه می‌شود!\n\n"
+        f"📊 تعداد کل دوستان دعوت شده شما: <b>{referred_count} نفر</b>\n\n"
+        f"🔗 <b>لینک دعوت اختصاصی شما:</b>\n"
+        f"<code>{ref_link}</code>\n\n"
+        f"<i>لینک بالا را کپی کرده و برای دوستان خود ارسال کنید.</i>"
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 بازگشت به منوی اصلی", callback_data="go_home", style=ButtonStyle.DANGER)]
+    ])
+    await call.message.edit_text(ref_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 @user_router.callback_query(F.data == "go_home")
 async def go_home_cb(call: CallbackQuery, state: FSMContext):
@@ -216,6 +254,7 @@ async def pay_wallet_cb(call: CallbackQuery, bot: Bot):
             content = await db.pop_inventory_item(product_id)
             if content:
                 await db.update_order_status(order_id, "approved", content)
+                await process_referral_reward(bot, db, order_id)
 
                 escaped_content = html.escape(content)
                 user_text = (
@@ -240,17 +279,14 @@ async def pay_wallet_cb(call: CallbackQuery, bot: Bot):
                     f"💵 مبلغ: {price:,} تومان\n"
                     f"🆔 کد پیگیری سفارش: <code>{order_id}</code>"
                 )
-                try:
-                    await bot.send_message(chat_id=ADMIN_LOG_CHANNEL, text=admin_text, parse_mode=ParseMode.HTML)
-                except Exception as e_log:
-                    logger.warning(f"Failed to post to admin log channel: {e_log}")
-                    if ADMINS:
-                        try:
-                            await bot.send_message(chat_id=ADMINS[0], text=admin_text, parse_mode=ParseMode.HTML)
-                        except Exception:
-                            pass
+                for admin_id in ADMINS:
+                    try:
+                        await bot.send_message(chat_id=admin_id, text=admin_text, parse_mode=ParseMode.HTML)
+                    except Exception:
+                        pass
             else:
                 await db.update_order_status(order_id, "approved")
+                await process_referral_reward(bot, db, order_id)
                 user_text = (
                     f"🎉 <b>پرداخت موفقیت‌آمیز با کیف پول!</b>\n\n"
                     f"🛍️ <b>محصول:</b> {escaped_prod_name}\n"
@@ -272,16 +308,14 @@ async def pay_wallet_cb(call: CallbackQuery, bot: Bot):
                     f"🆔 کد پیگیری سفارش: <code>{order_id}</code>\n\n"
                     "لطفاً محصول را به صورت دستی تحویل دهید."
                 )
-                try:
-                    await bot.send_message(chat_id=ADMIN_LOG_CHANNEL, text=admin_text, parse_mode=ParseMode.HTML)
-                except Exception:
-                    if ADMINS:
-                        try:
-                            await bot.send_message(chat_id=ADMINS[0], text=admin_text, parse_mode=ParseMode.HTML)
-                        except Exception:
-                            pass
+                for admin_id in ADMINS:
+                    try:
+                        await bot.send_message(chat_id=admin_id, text=admin_text, parse_mode=ParseMode.HTML)
+                    except Exception:
+                        pass
         else:
             await db.update_order_status(order_id, "approved")
+            await process_referral_reward(bot, db, order_id)
             user_text = (
                 f"🎉 <b>پرداخت موفقیت‌آمیز با کیف پول!</b>\n\n"
                 f"🛍️ <b>محصول:</b> {escaped_prod_name}\n"
@@ -303,14 +337,11 @@ async def pay_wallet_cb(call: CallbackQuery, bot: Bot):
                 f"🆔 کد پیگیری سفارش: <code>{order_id}</code>\n\n"
                 "لطفاً محصول را آماده کرده و تحویل دهید."
             )
-            try:
-                await bot.send_message(chat_id=ADMIN_LOG_CHANNEL, text=admin_text, parse_mode=ParseMode.HTML)
-            except Exception:
-                if ADMINS:
-                    try:
-                        await bot.send_message(chat_id=ADMINS[0], text=admin_text, parse_mode=ParseMode.HTML)
-                    except Exception:
-                        pass
+            for admin_id in ADMINS:
+                try:
+                    await bot.send_message(chat_id=admin_id, text=admin_text, parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
     else:
         await call.answer("❌ موجودی کیف پول شما کافی نیست!", show_alert=True)
 
@@ -571,36 +602,19 @@ async def process_receipt_photo(message: Message, state: FSMContext, bot: Bot):
         ]
     ])
 
-    sent_successfully = False
-    try:
-        await bot.send_photo(
-            chat_id=ADMIN_LOG_CHANNEL,
-            photo=file_id,
-            caption=admin_notify_text,
-            reply_markup=admin_keyboard,
-            parse_mode=ParseMode.HTML
-        )
-        sent_successfully = True
-    except Exception as e_channel:
-        logger.error(f"Failed to post to dedicated admin log channel {ADMIN_LOG_CHANNEL}: {e_channel}")
-
-    if not sent_successfully:
-        if ADMINS:
-            try:
-                fallback_text = (
-                    admin_notify_text +
-                    "\n\n⚠️ <b>توجه سیستم: ارسال به کانال لاگ با خطا مواجه شد و این رسید به عنوان پشتیبان به پی‌وی شما فرستاده شد.</b>"
-                )
-                await bot.send_photo(
-                    chat_id=ADMINS[0],
-                    photo=file_id,
-                    caption=fallback_text,
-                    reply_markup=admin_keyboard,
-                    parse_mode=ParseMode.HTML
-                )
-                logger.info(f"Fallback successful: delivered receipt {order_id} directly to main admin {ADMINS[0]}")
-            except Exception as e_admin:
-                logger.error(f"Failed fallback delivery of receipt {order_id} to main admin {ADMINS[0]} PV: {e_admin}")
+    # Send receipt photo directly to the PV of all registered admins
+    for admin_id in ADMINS:
+        try:
+            await bot.send_photo(
+                chat_id=admin_id,
+                photo=file_id,
+                caption=admin_notify_text,
+                reply_markup=admin_keyboard,
+                parse_mode=ParseMode.HTML
+            )
+            logger.info(f"Delivered receipt {order_id} directly to admin {admin_id} PV.")
+        except Exception as e_admin:
+            logger.error(f"Failed direct delivery of receipt {order_id} to admin {admin_id} PV: {e_admin}")
 
 @user_router.callback_query(F.data.startswith("cancel_order_"))
 async def cancel_order_cb(call: CallbackQuery):
@@ -735,24 +749,13 @@ async def process_ticket_message(message: Message, state: FSMContext, bot: Bot):
         "جهت پاسخ دادن به تیکت، از بخش «مدیریت تیکت‌ها» در پنل مدیریت ربات اقدام کنید."
     )
 
-    sent_successfully = False
-    try:
-        await bot.send_message(chat_id=ADMIN_LOG_CHANNEL, text=admin_alert, parse_mode=ParseMode.HTML)
-        sent_successfully = True
-    except Exception as e_chan:
-        logger.error(f"Failed to post support ticket to channel {ADMIN_LOG_CHANNEL}: {e_chan}")
-
-    if not sent_successfully:
-        if ADMINS:
-            try:
-                fallback_alert = (
-                    admin_alert +
-                    "\n\n⚠️ <b>توجه سیستم: ارسال به کانال لاگ با خطا مواجه شد و این تیکت به صورت مستقیم به پی‌وی شما فوروارد شد.</b>"
-                )
-                await bot.send_message(chat_id=ADMINS[0], text=fallback_alert, parse_mode=ParseMode.HTML)
-                logger.info(f"Fallback successful: delivered ticket {ticket_id} directly to main admin {ADMINS[0]}")
-            except Exception as e_pv:
-                logger.error(f"Failed fallback delivery of ticket {ticket_id} to main admin {ADMINS[0]}: {e_pv}")
+    # Send ticket notification directly to the PV of all registered admins
+    for admin_id in ADMINS:
+        try:
+            await bot.send_message(chat_id=admin_id, text=admin_alert, parse_mode=ParseMode.HTML)
+            logger.info(f"Delivered ticket {ticket_id} directly to admin {admin_id} PV.")
+        except Exception as e_pv:
+            logger.error(f"Failed direct delivery of ticket {ticket_id} to admin {admin_id} PV: {e_pv}")
 
     success_text = (
         f"✅ <b>تیکت شما با شناسه <code>{ticket_id}</code> با موفقیت ثبت شد.</b>\n\n"

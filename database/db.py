@@ -34,7 +34,7 @@ class Database:
                 logger.info("Disconnected from SQLite database.")
 
     async def _create_tables(self):
-        # Create users table with wallet balance and test_account_used columns
+        # Create users table with wallet balance, test_account_used, and referred_by columns
         await self.conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY,
@@ -43,7 +43,8 @@ class Database:
                 joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 expires_at TIMESTAMP DEFAULT NULL,
                 balance INTEGER DEFAULT 0,
-                test_account_used INTEGER DEFAULT 0
+                test_account_used INTEGER DEFAULT 0,
+                referred_by INTEGER DEFAULT NULL
             )
         """)
 
@@ -94,6 +95,7 @@ class Database:
                 status TEXT DEFAULT 'pending',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 delivered_content TEXT,
+                referral_rewarded INTEGER DEFAULT 0,
                 FOREIGN KEY (user_id) REFERENCES users (id),
                 FOREIGN KEY (product_id) REFERENCES products (id)
             )
@@ -145,15 +147,31 @@ class Database:
         # Migrations to ensure columns exist in case db already exists
         try:
             await self.conn.execute("ALTER TABLE users ADD COLUMN balance INTEGER DEFAULT 0;")
+            await self.conn.commit()
         except Exception:
             pass
         try:
             await self.conn.execute("ALTER TABLE users ADD COLUMN test_account_used INTEGER DEFAULT 0;")
+            await self.conn.commit()
+        except Exception:
+            pass
+        try:
+            await self.conn.execute("ALTER TABLE users ADD COLUMN referred_by INTEGER DEFAULT NULL;")
+            await self.conn.commit()
+        except Exception:
+            pass
+        try:
+            await self.conn.execute("ALTER TABLE orders ADD COLUMN referral_rewarded INTEGER DEFAULT 0;")
+            await self.conn.commit()
         except Exception:
             pass
 
         # Indexes for fast querying
         await self.conn.execute("CREATE INDEX IF NOT EXISTS idx_users_id ON users (id);")
+        try:
+            await self.conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_referral_rewarded ON orders (referral_rewarded);")
+        except Exception:
+            pass
         await self.conn.execute("CREATE INDEX IF NOT EXISTS idx_products_category_id ON products (category_id);")
         await self.conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders (user_id);")
         await self.conn.commit()
@@ -172,17 +190,38 @@ class Database:
     # --- Database Operations Helper Methods ---
 
     # User operations
-    async def add_user(self, user_id: int, username: str, full_name: str):
+    async def add_user(self, user_id: int, username: str, full_name: str, referred_by: int = None):
         async with self._lock:
-            await self.conn.execute(
-                "INSERT OR IGNORE INTO users (id, username, full_name) VALUES (?, ?, ?)",
-                (user_id, username, full_name)
-            )
-            await self.conn.commit()
+            # Check if user already exists
+            async with self.conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)) as cursor:
+                exists = await cursor.fetchone()
+
+            if not exists:
+                # Insert brand-new user with referral source
+                # Ensure referred_by is not the user themselves to prevent self-referral
+                ref_id = referred_by if referred_by and referred_by != user_id else None
+                await self.conn.execute(
+                    "INSERT INTO users (id, username, full_name, referred_by) VALUES (?, ?, ?, ?)",
+                    (user_id, username, full_name, ref_id)
+                )
+                await self.conn.commit()
+            else:
+                # Update existing user profile if username or full_name changes
+                await self.conn.execute(
+                    "UPDATE users SET username = ?, full_name = ? WHERE id = ?",
+                    (username, full_name, user_id)
+                )
+                await self.conn.commit()
+
+    async def get_referred_count(self, user_id: int) -> int:
+        async with self._lock:
+            async with self.conn.execute("SELECT COUNT(*) FROM users WHERE referred_by = ?", (user_id,)) as cursor:
+                res = await cursor.fetchone()
+                return res[0] if res else 0
 
     async def get_user(self, user_id: int):
         async with self._lock:
-            async with self.conn.execute("SELECT id, username, full_name, joined_at, expires_at, balance, test_account_used FROM users WHERE id = ?", (user_id,)) as cursor:
+            async with self.conn.execute("SELECT id, username, full_name, joined_at, expires_at, balance, test_account_used, referred_by FROM users WHERE id = ?", (user_id,)) as cursor:
                 return await cursor.fetchone()
 
     async def get_all_users_count(self):
@@ -364,6 +403,54 @@ class Database:
                 (status, delivered_content, order_id)
             )
             await self.conn.commit()
+
+    async def reward_referrer_if_eligible(self, order_id: str) -> tuple[int, int] | None:
+        """
+        Rewards the referrer with 10,000 Tomans if the order gets approved,
+        returning (referrer_id, referrer_new_balance) if rewarded, else None.
+        """
+        async with self._lock:
+            # Check if order is approved and find user_id (only reward for actual product purchases, product_id is not null)
+            async with self.conn.execute("SELECT user_id, status, product_id FROM orders WHERE id = ?", (order_id,)) as cursor:
+                order = await cursor.fetchone()
+                if not order or order[1] != 'approved' or order[2] is None:
+                    return None
+                user_id = order[0]
+
+            # Find if this user was referred by someone
+            async with self.conn.execute("SELECT referred_by FROM users WHERE id = ?", (user_id,)) as cursor:
+                user_record = await cursor.fetchone()
+                if not user_record or user_record[0] is None:
+                    return None
+                referrer_id = user_record[0]
+
+            # Check if this order has already processed referral reward to avoid double payout
+            # We can use a unique combination in a new or existing table, or just add a column,
+            # but since we don't have a specific column, let's store it or verify if we have already rewarded.
+            # To do this safely and simply without a schema change, let's keep an in-db flag,
+            # or add a column `referral_rewarded` in orders. Let's run a migration to add `referral_rewarded` to orders.
+            # Let's perform a migration try/except first to ensure the column is there.
+            try:
+                await self.conn.execute("ALTER TABLE orders ADD COLUMN referral_rewarded INTEGER DEFAULT 0;")
+                await self.conn.commit()
+            except Exception:
+                pass
+
+            async with self.conn.execute("SELECT referral_rewarded FROM orders WHERE id = ?", (order_id,)) as cursor:
+                res = await cursor.fetchone()
+                if res and res[0] == 1:
+                    return None # Already rewarded for this order
+
+            # Perform the reward
+            await self.conn.execute("UPDATE users SET balance = balance + 10000 WHERE id = ?", (referrer_id,))
+            await self.conn.execute("UPDATE orders SET referral_rewarded = 1 WHERE id = ?", (order_id,))
+            await self.conn.commit()
+
+            # Get new balance of referrer
+            async with self.conn.execute("SELECT balance FROM users WHERE id = ?", (referrer_id,)) as cursor:
+                bal_res = await cursor.fetchone()
+                new_balance = bal_res[0] if bal_res else 0
+                return (referrer_id, new_balance)
 
     async def get_user_orders(self, user_id: int):
         async with self._lock:

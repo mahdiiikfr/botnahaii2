@@ -13,7 +13,10 @@ def get_main_keyboard(user_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="👛 کیف پول من", callback_data="my_wallet", style=ButtonStyle.PRIMARY)
         ],
         [
-            InlineKeyboardButton(text="🎁 اکانت تست رایگان", callback_data="free_test_account", style=ButtonStyle.SUCCESS),
+            InlineKeyboardButton(text="👥 کسب درآمد (دعوت)", callback_data="referral_program", style=ButtonStyle.SUCCESS),
+            InlineKeyboardButton(text="🎁 تست رایگان", callback_data="free_test_account", style=ButtonStyle.SUCCESS)
+        ],
+        [
             InlineKeyboardButton(text="🎫 ثبت تیکت پشتیبانی", callback_data="support_info", style=ButtonStyle.PRIMARY)
         ]
     ]
