@@ -20,6 +20,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- Safe admin logger utility ---
+async def send_admin_log(bot: Bot, text: str):
+    """Sends log text to the Admin Channel, falling back directly to main Admin PV if channel is inaccessible."""
+    sent = False
+    try:
+        await bot.send_message(chat_id=ADMIN_LOG_CHANNEL, text=text, parse_mode=ParseMode.HTML)
+        sent = True
+    except Exception as e:
+        logger.error(f"Failed to post log to dedicated channel {ADMIN_LOG_CHANNEL}: {e}")
+
+    if not sent and ADMINS:
+        try:
+            fallback_text = text + "\n\n⚠️ <b>توجه سیستم: ارسال به کانال لاگ با خطا مواجه شد و این لاگ به پی‌وی ادمین ارسال گردید.</b>"
+            await bot.send_message(chat_id=ADMINS[0], text=fallback_text, parse_mode=ParseMode.HTML)
+            logger.info("Admin log fallback to PV successful.")
+        except Exception as e_pv:
+            logger.error(f"Failed fallback log delivery to main admin {ADMINS[0]} PV: {e_pv}")
+
 # --- Background Subscriptions Task ---
 async def check_user_subscriptions_task(bot: Bot, db: Database):
     """Background task to periodically scan expired user subscriptions and alert them."""
@@ -33,7 +51,6 @@ async def check_user_subscriptions_task(bot: Bot, db: Database):
                     "جهت تمدید اشتراک خود و دسترسی مجدد به خدمات، می‌توانید از منوی فروشگاه خرید جدید ثبت کنید."
                 )
                 await bot.send_message(chat_id=user_id, text=alert_text, parse_mode="Markdown")
-                # Clear expires_at so they don't get duplicate alerts until renewed
                 async with db._lock:
                     await db.conn.execute("UPDATE users SET expires_at = NULL WHERE id = ?", (user_id,))
                     await db.conn.commit()
@@ -88,7 +105,7 @@ async def handle_zarinpal_callback(request: web.Request) -> web.Response:
         success, ref_id_or_err = await zp.verify_payment(amount, authority)
 
         if success:
-            # Payment verified successfully!
+            # Payment verified!
 
             # 1. Check if this is a wallet charge order!
             if order[2] is None:
@@ -96,25 +113,22 @@ async def handle_zarinpal_callback(request: web.Request) -> web.Response:
                 await db.add_balance(user_id, amount)
 
                 user_text = (
-                    f"🔋 **تراکنش شارژ کیف پول با موفقیت تایید شد!**\n\n"
-                    f"💵 مبلغ **{amount:,} تومان** به اعتبار کیف پول شما افزوده شد."
+                    f"🔋 <b>تراکنش شارژ کیف پول با موفقیت تایید شد!</b>\n\n"
+                    f"💵 مبلغ <b>{amount:,} تومان</b> به اعتبار کیف پول شما افزوده شد."
                 )
                 try:
-                    await bot.send_message(chat_id=user_id, text=user_text, parse_mode=ParseMode.MARKDOWN)
+                    await bot.send_message(chat_id=user_id, text=user_text, parse_mode=ParseMode.HTML)
                 except Exception:
                     pass
 
                 admin_text = (
-                    f"🔋 **شارژ موفق آنلاین حساب کاربری!**\n\n"
-                    f"👤 کاربر: `{user_id}`\n"
+                    f"🔋 <b>شارژ موفق آنلاین حساب کاربری!</b>\n\n"
+                    f"👤 کاربر: <code>{user_id}</code>\n"
                     f"💵 مبلغ شارژ: {amount:,} تومان\n"
-                    f"🆔 کد پیگیری سفارش: `{order_id}`\n"
-                    f"🧾 شماره تراکنش (Ref ID): `{ref_id_or_err}`"
+                    f"🆔 کد پیگیری سفارش: <code>{order_id}</code>\n"
+                    f"🧾 شماره تراکنش (Ref ID): <code>{ref_id_or_err}</code>"
                 )
-                try:
-                    await bot.send_message(chat_id=ADMIN_LOG_CHANNEL, text=admin_text, parse_mode=ParseMode.MARKDOWN)
-                except Exception:
-                    pass
+                await send_admin_log(bot, admin_text)
 
                 return web.Response(
                     text=f"<html><body style='font-family:tahoma;text-align:center;color:green;'><h2>🎉 کیف پول شما با موفقیت شارژ شد!</h2><p>مبلغ: {amount:,} تومان</p><p>کد پیگیری: {order_id}</p></body></html>",
@@ -132,29 +146,26 @@ async def handle_zarinpal_callback(request: web.Request) -> web.Response:
                     await db.update_order_status(order_id, "approved", content)
 
                     user_text = (
-                        f"✅ **پرداخت آنلاین شما با موفقیت تایید شد!**\n\n"
-                        f"🛍️ **محصول:** {product_name}\n"
-                        f"⚡ **محتوای لایسنس / اشتراک شما:**\n\n"
-                        f"`{content}`\n\n"
+                        f"✅ <b>پرداخت آنلاین شما با موفقیت تایید شد!</b>\n\n"
+                        f"🛍️ <b>محصول:</b> {product_name}\n"
+                        f"⚡ <b>محتوای لایسنس / اشتراک شما:</b>\n\n"
+                        f"<code>{content}</code>\n\n"
                         "سپاس از خرید شما! مجدداً از منوی اصلی در خدمت شما هستیم."
                     )
                     try:
-                        await bot.send_message(chat_id=user_id, text=user_text, parse_mode=ParseMode.MARKDOWN)
+                        await bot.send_message(chat_id=user_id, text=user_text, parse_mode=ParseMode.HTML)
                     except Exception:
                         logger.exception("Failed to alert user about automated subscription delivery")
 
                     admin_text = (
-                        f"🟢 **پرداخت موفق آنلاین و تحویل خودکار!**\n\n"
-                        f"👤 کاربر: `{user_id}`\n"
+                        f"🟢 <b>پرداخت موفق آنلاین و تحویل خودکار!</b>\n\n"
+                        f"👤 کاربر: <code>{user_id}</code>\n"
                         f"📦 محصول: {product_name}\n"
                         f"💵 مبلغ: {amount:,} تومان\n"
-                        f"🆔 کد پیگیری سفارش: `{order_id}`\n"
-                        f"🧾 شماره تراکنش (Ref ID): `{ref_id_or_err}`"
+                        f"🆔 کد پیگیری سفارش: <code>{order_id}</code>\n"
+                        f"🧾 شماره تراکنش (Ref ID): <code>{ref_id_or_err}</code>"
                     )
-                    try:
-                        await bot.send_message(chat_id=ADMIN_LOG_CHANNEL, text=admin_text, parse_mode=ParseMode.MARKDOWN)
-                    except Exception:
-                        logger.exception("Failed to alert admin log channel")
+                    await send_admin_log(bot, admin_text)
 
                     return web.Response(
                         text=f"<html><body style='font-family:tahoma;text-align:center;color:green;'><h2>🎉 پرداخت شما با موفقیت انجام شد!</h2><p>کد پیگیری سفارش: {order_id}</p><p>محتوای محصول خریداری شده در تلگرام برای شما ارسال گردید.</p></body></html>",
@@ -165,27 +176,24 @@ async def handle_zarinpal_callback(request: web.Request) -> web.Response:
                     # Auto deliver but inventory is empty
                     await db.update_order_status(order_id, "approved")
                     user_text = (
-                        f"✅ **پرداخت آنلاین شما با موفقیت تایید شد!**\n\n"
-                        f"🛍️ **محصول:** {product_name}\n"
+                        f"✅ <b>پرداخت آنلاین شما با موفقیت تایید شد!</b>\n\n"
+                        f"🛍️ <b>محصول:</b> {product_name}\n"
                         "✍️ به دلیل اتمام موجودی انبار، محصول شما به زودی توسط مدیریت به صورت دستی برای شما ارسال خواهد شد."
                     )
                     try:
-                        await bot.send_message(chat_id=user_id, text=user_text, parse_mode=ParseMode.MARKDOWN)
+                        await bot.send_message(chat_id=user_id, text=user_text, parse_mode=ParseMode.HTML)
                     except Exception:
                         pass
 
                     admin_text = (
-                        f"⚠️ **پرداخت موفق آنلاین اما انبار خالی است!**\n\n"
-                        f"👤 کاربر: `{user_id}`\n"
+                        f"⚠️ <b>پرداخت موفق آنلاین اما انبار خالی است!</b>\n\n"
+                        f"👤 کاربر: <code>{user_id}</code>\n"
                         f"📦 محصول: {product_name}\n"
                         f"💵 مبلغ: {amount:,} تومان\n"
-                        f"🆔 کد پیگیری سفارش: `{order_id}`\n\n"
+                        f"🆔 کد پیگیری سفارش: <code>{order_id}</code>\n\n"
                         "لطفاً محصول را به صورت دستی در پی‌وی کاربر تحویل دهید."
                     )
-                    try:
-                        await bot.send_message(chat_id=ADMIN_LOG_CHANNEL, text=admin_text, parse_mode=ParseMode.MARKDOWN)
-                    except Exception:
-                        pass
+                    await send_admin_log(bot, admin_text)
 
                     return web.Response(
                         text=f"<html><body style='font-family:tahoma;text-align:center;'><h2>🎉 پرداخت شما موفقیت‌آمیز بود!</h2><p>کد پیگیری: {order_id}</p><p>به دلیل اتمام موقتی موجودی انبار، همکاران ما به زودی لایسنس را در تلگرام برای شما ارسال خواهند کرد.</p></body></html>",
@@ -196,27 +204,24 @@ async def handle_zarinpal_callback(request: web.Request) -> web.Response:
                 # Manual delivery
                 await db.update_order_status(order_id, "approved")
                 user_text = (
-                    f"✅ **پرداخت آنلاین شما با موفقیت تایید شد!**\n\n"
-                    f"🛍️ **محصول:** {product_name}\n"
+                    f"✅ <b>پرداخت آنلاین شما با موفقیت تایید شد!</b>\n\n"
+                    f"🛍️ <b>محصول:</b> {product_name}\n"
                     "✍️ محصول شما به زودی توسط پشتیبانی آماده شده و ارسال خواهد شد. از صبوری شما سپاسگزاریم."
                 )
                 try:
-                    await bot.send_message(chat_id=user_id, text=user_text, parse_mode=ParseMode.MARKDOWN)
+                    await bot.send_message(chat_id=user_id, text=user_text, parse_mode=ParseMode.HTML)
                 except Exception:
                     pass
 
                 admin_text = (
-                    f"📥 **سفارش جدید پرداخت شده آنلاین (تحویل دستی)**\n\n"
-                    f"👤 کاربر: `{user_id}`\n"
+                    f"📥 <b>سفارش جدید پرداخت شده آنلاین (تحویل دستی)</b>\n\n"
+                    f"👤 کاربر: <code>{user_id}</code>\n"
                     f"📦 محصول: {product_name}\n"
                     f"💵 مبلغ: {amount:,} تومان\n"
-                    f"🆔 کد پیگیری سفارش: `{order_id}`\n\n"
+                    f"🆔 کد پیگیری سفارش: <code>{order_id}</code>\n\n"
                     "لطفاً محصول را آماده کرده و برای کاربر ارسال کنید."
                 )
-                try:
-                    await bot.send_message(chat_id=ADMIN_LOG_CHANNEL, text=admin_text, parse_mode=ParseMode.MARKDOWN)
-                except Exception:
-                    pass
+                await send_admin_log(bot, admin_text)
 
                 return web.Response(
                     text=f"<html><body style='font-family:tahoma;text-align:center;color:green;'><h2>🎉 پرداخت شما موفقیت‌آمیز بود!</h2><p>کد پیگیری سفارش: {order_id}</p><p>پشتیبانی به زودی لایسنس/اشتراک را در تلگرام به شما تحویل خواهد داد.</p></body></html>",
@@ -228,27 +233,24 @@ async def handle_zarinpal_callback(request: web.Request) -> web.Response:
             await db.update_order_status(order_id, "rejected")
 
             user_notify_text = (
-                f"❌ **پرداخت سفارش `{order_id}` ناموفق بود!**\n\n"
+                f"❌ <b>پرداخت سفارش `{order_id}` ناموفق بود!</b>\n\n"
                 f"توضیحات خطا: {ref_id_or_err}\n"
                 "در صورت کسر وجه از حساب، مبلغ طی ۷۲ ساعت آینده توسط بانک عودت داده می‌شود. مجدداً می‌توانید سفارش ثبت کنید."
             )
             try:
-                await bot.send_message(chat_id=user_id, text=user_notify_text, parse_mode=ParseMode.MARKDOWN)
+                await bot.send_message(chat_id=user_id, text=user_notify_text, parse_mode=ParseMode.HTML)
             except Exception:
                 pass
 
             admin_notify_text = (
-                f"🔴 **خطا در تایید تراکنش آنلاین!**\n\n"
-                f"👤 کاربر: `{user_id}`\n"
+                f"🔴 <b>خطا در تایید تراکنش آنلاین!</b>\n\n"
+                f"👤 کاربر: <code>{user_id}</code>\n"
                 f"📦 محصول: {product_name}\n"
                 f"💵 مبلغ: {amount:,} تومان\n"
-                f"🆔 کد پیگیری سفارش: `{order_id}`\n"
-                f"❌ علت خطا: `{ref_id_or_err}`"
+                f"🆔 کد پیگیری سفارش: <code>{order_id}</code>\n"
+                f"❌ علت خطا: <code>{ref_id_or_err}</code>"
             )
-            try:
-                await bot.send_message(chat_id=ADMIN_LOG_CHANNEL, text=admin_notify_text, parse_mode=ParseMode.MARKDOWN)
-            except Exception:
-                pass
+            await send_admin_log(bot, admin_notify_text)
 
             return web.Response(
                 text=f"<html><body style='font-family:tahoma;text-align:center;color:red;'><h2>❌ خطا در تایید تراکنش</h2><p>توضیحات خطا: {ref_id_or_err}</p></body></html>",
@@ -256,29 +258,26 @@ async def handle_zarinpal_callback(request: web.Request) -> web.Response:
                 charset="utf-8"
             )
     else:
-        # Canceled or failed Status on gateway
+        # Canceled status on gateway
         await db.update_order_status(order_id, "rejected")
 
         user_notify_text = (
-            f"❌ **تراکنش سفارش `{order_id}` لغو شد یا با موفقیت انجام نگردید!**\n\n"
+            f"❌ <b>تراکنش سفارش `{order_id}` لغو شد یا با موفقیت انجام نگردید!</b>\n\n"
             "پرداخت توسط شما لغو شد یا تراکنش ناموفق بود. در صورت تمایل می‌توانید مجدداً از منوی ربات خرید نمایید."
         )
         try:
-            await bot.send_message(chat_id=user_id, text=user_notify_text, parse_mode=ParseMode.MARKDOWN)
+            await bot.send_message(chat_id=user_id, text=user_notify_text, parse_mode=ParseMode.HTML)
         except Exception:
             pass
 
         admin_notify_text = (
-            f"🔴 **تراکنش آنلاین لغو شده توسط کاربر**\n\n"
-            f"👤 کاربر: `{user_id}`\n"
+            f"🔴 <b>تراکنش آنلاین لغو شده توسط کاربر</b>\n\n"
+            f"👤 کاربر: <code>{user_id}</code>\n"
             f"📦 محصول: {product_name}\n"
             f"💵 مبلغ: {amount:,} تومان\n"
-            f"🆔 کد پیگیری سفارش: `{order_id}`"
+            f"🆔 کد پیگیری سفارش: <code>{order_id}</code>"
         )
-        try:
-            await bot.send_message(chat_id=ADMIN_LOG_CHANNEL, text=admin_notify_text, parse_mode=ParseMode.MARKDOWN)
-        except Exception:
-            pass
+        await send_admin_log(bot, admin_notify_text)
 
         return web.Response(
             text="<html><body style='font-family:tahoma;text-align:center;'><h2>❌ پرداخت توسط کاربر لغو شد یا ناموفق بود.</h2></body></html>",
