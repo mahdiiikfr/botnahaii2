@@ -88,9 +88,9 @@ async def handle_zarinpal_callback(request: web.Request) -> web.Response:
         success, ref_id_or_err = await zp.verify_payment(amount, authority)
 
         if success:
-            # Payment verified!
+            # Payment verified successfully!
 
-            # Check if this is a wallet charge order!
+            # 1. Check if this is a wallet charge order!
             if order[2] is None:
                 await db.update_order_status(order_id, "approved")
                 await db.add_balance(user_id, amount)
@@ -122,7 +122,7 @@ async def handle_zarinpal_callback(request: web.Request) -> web.Response:
                     charset="utf-8"
                 )
 
-            # Otherwise, this is a standard product purchase order
+            # 2. Otherwise, this is a standard product purchase order
             product = await db.get_product(order[2])
             auto_deliver = product[5] if product else 0
 
@@ -224,17 +224,67 @@ async def handle_zarinpal_callback(request: web.Request) -> web.Response:
                     charset="utf-8"
                 )
         else:
+            # Verification failed
+            await db.update_order_status(order_id, "rejected")
+
+            user_notify_text = (
+                f"❌ **پرداخت سفارش `{order_id}` ناموفق بود!**\n\n"
+                f"توضیحات خطا: {ref_id_or_err}\n"
+                "در صورت کسر وجه از حساب، مبلغ طی ۷۲ ساعت آینده توسط بانک عودت داده می‌شود. مجدداً می‌توانید سفارش ثبت کنید."
+            )
+            try:
+                await bot.send_message(chat_id=user_id, text=user_notify_text, parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                pass
+
+            admin_notify_text = (
+                f"🔴 **خطا در تایید تراکنش آنلاین!**\n\n"
+                f"👤 کاربر: `{user_id}`\n"
+                f"📦 محصول: {product_name}\n"
+                f"💵 مبلغ: {amount:,} تومان\n"
+                f"🆔 کد پیگیری سفارش: `{order_id}`\n"
+                f"❌ علت خطا: `{ref_id_or_err}`"
+            )
+            try:
+                await bot.send_message(chat_id=ADMIN_LOG_CHANNEL, text=admin_notify_text, parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                pass
+
             return web.Response(
                 text=f"<html><body style='font-family:tahoma;text-align:center;color:red;'><h2>❌ خطا در تایید تراکنش</h2><p>توضیحات خطا: {ref_id_or_err}</p></body></html>",
                 content_type="text/html",
                 charset="utf-8"
             )
     else:
-         return web.Response(
-             text="<html><body style='font-family:tahoma;text-align:center;'><h2>❌ پرداخت توسط کاربر لغو شد یا ناموفق بود.</h2></body></html>",
-             content_type="text/html",
-             charset="utf-8"
-         )
+        # Canceled or failed Status on gateway
+        await db.update_order_status(order_id, "rejected")
+
+        user_notify_text = (
+            f"❌ **تراکنش سفارش `{order_id}` لغو شد یا با موفقیت انجام نگردید!**\n\n"
+            "پرداخت توسط شما لغو شد یا تراکنش ناموفق بود. در صورت تمایل می‌توانید مجدداً از منوی ربات خرید نمایید."
+        )
+        try:
+            await bot.send_message(chat_id=user_id, text=user_notify_text, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            pass
+
+        admin_notify_text = (
+            f"🔴 **تراکنش آنلاین لغو شده توسط کاربر**\n\n"
+            f"👤 کاربر: `{user_id}`\n"
+            f"📦 محصول: {product_name}\n"
+            f"💵 مبلغ: {amount:,} تومان\n"
+            f"🆔 کد پیگیری سفارش: `{order_id}`"
+        )
+        try:
+            await bot.send_message(chat_id=ADMIN_LOG_CHANNEL, text=admin_notify_text, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            pass
+
+        return web.Response(
+            text="<html><body style='font-family:tahoma;text-align:center;'><h2>❌ پرداخت توسط کاربر لغو شد یا ناموفق بود.</h2></body></html>",
+            content_type="text/html",
+            charset="utf-8"
+        )
 
 # --- Main Bootstrapping Runner ---
 async def main():

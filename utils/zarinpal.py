@@ -10,7 +10,6 @@ class ZarinPal:
         self.merchant_id = ZARINPAL_MERCHANT_ID
         self.callback_url = ZARINPAL_CALLBACK_URL
 
-        # We will dynamically try these endpoints in sequence for fault-tolerance (routing/timeout fixes)
         if ZARINPAL_SANDBOX:
             self.request_endpoints = ["https://sandbox.zarinpal.com/pg/v4/payment/request.json"]
             self.verify_endpoints = ["https://sandbox.zarinpal.com/pg/v4/payment/verify.json"]
@@ -31,16 +30,20 @@ class ZarinPal:
     async def request_payment(self, amount_toman: int, description: str, order_id: str) -> tuple[bool, str | None]:
         """
         Request payment gateway.
-        Utilizes multiple ZarinPal mirrors sequentially in case of network timeouts or routing blocks.
-        Returns: (success_bool, payment_url_or_error_message)
+        ZarinPal V4 API expects amount in Toman, but for merchants configured to use Rials,
+        we multiply the Toman amount by 10 (add a zero) to send it as Rials as requested.
         """
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
+
+        # Multiply Toman amount by 10 to convert to Rials as ZarinPal Rial gateway requirement
+        amount_rial = int(amount_toman) * 10
+
         payload = {
             "merchant_id": self.merchant_id,
-            "amount": int(amount_toman),
+            "amount": amount_rial,
             "callback_url": f"{self.callback_url}?order_id={order_id}",
             "description": description,
             "metadata": {
@@ -49,12 +52,10 @@ class ZarinPal:
         }
 
         last_error = ""
-        # Try mirrors one by one to achieve maximum reliability and bypass routing timeouts
         for url in self.request_endpoints:
             try:
-                logger.info(f"Attempting ZarinPal payment request via endpoint: {url}")
+                logger.info(f"Attempting ZarinPal payment request via endpoint: {url} for amount: {amount_rial} Rials")
                 async with aiohttp.ClientSession() as session:
-                    # Timeout set to 8 seconds to allow quick failover to other mirrors if connection blocks
                     async with session.post(url, json=payload, headers=headers, timeout=8) as response:
                         res_data = await response.json()
                         if response.status == 200 or (res_data.get("data") and res_data["data"].get("code") == 100):
@@ -77,22 +78,25 @@ class ZarinPal:
         """
         Verify payment after user redirects back.
         Uses sequential mirror failover to ensure stable verification.
-        Returns: (success_bool, ref_id_or_error)
+        Uses amount in Rials (Toman * 10) to match the payment request.
         """
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
+
+        amount_rial = int(amount_toman) * 10
+
         payload = {
             "merchant_id": self.merchant_id,
-            "amount": int(amount_toman),
+            "amount": amount_rial,
             "authority": authority
         }
 
         last_error = ""
         for url in self.verify_endpoints:
             try:
-                logger.info(f"Attempting ZarinPal verification via endpoint: {url}")
+                logger.info(f"Attempting ZarinPal verification via endpoint: {url} for amount: {amount_rial} Rials")
                 async with aiohttp.ClientSession() as session:
                     async with session.post(url, json=payload, headers=headers, timeout=8) as response:
                         res_data = await response.json()
