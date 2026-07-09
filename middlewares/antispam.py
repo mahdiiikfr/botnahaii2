@@ -2,11 +2,12 @@ import time
 from typing import Any, Awaitable, Callable, Dict
 from aiogram import BaseMiddleware
 from aiogram.types import Message, CallbackQuery
+from config.config import THROTTLING_RATE_LIMIT
 
 class AntiSpamMiddleware(BaseMiddleware):
-    def __init__(self, limit: float = 0.5):
+    def __init__(self, limit: float = None):
         super().__init__()
-        self.limit = limit
+        self.limit = limit if limit is not None else THROTTLING_RATE_LIMIT
         self.last_action = {}
 
     async def __call__(
