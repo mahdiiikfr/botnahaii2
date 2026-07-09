@@ -1,9 +1,12 @@
+import asyncio
+import logging
 from typing import Any, Awaitable, Callable, Dict
 from aiogram import BaseMiddleware
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ButtonStyle
-from aiogram.exceptions import TelegramBadRequest
 from config.config import REQUIRED_CHANNEL, REQUIRED_CHANNEL_LINK, ADMINS
+
+logger = logging.getLogger(__name__)
 
 class CheckJoinMiddleware(BaseMiddleware):
     async def __call__(
@@ -30,14 +33,17 @@ class CheckJoinMiddleware(BaseMiddleware):
 
             bot = data["bot"]
             try:
-                member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=user_id)
+                # Force a strict 2.0 second timeout on get_chat_member to prevent network hanging
+                member = await asyncio.wait_for(
+                    bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=user_id),
+                    timeout=2.0
+                )
                 if member.status in ["kicked", "left"]:
                     return await self._show_join_message(event, bot)
-            except TelegramBadRequest:
-                # If bot cannot check channel membership (e.g. not admin), proceed anyway
-                return await handler(event, data)
-            except Exception:
-                # Fallback for any other errors
+            except Exception as e:
+                # If bot is not administrator, channel doesn't exist, or call times out/fails,
+                # log the error and allow the user to proceed gracefully so the bot doesn't hang!
+                logger.warning(f"resilient check_join skipped. Error checking membership for user {user_id}: {e}")
                 return await handler(event, data)
 
         return await handler(event, data)
