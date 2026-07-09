@@ -467,10 +467,19 @@ class Database:
             await self.conn.commit()
 
     async def delete_pending_orders(self, user_id: int):
-        """Silently deletes all pending orders for a given user."""
+        """Silently deletes all pending orders for a given user, optimized to avoid redundant locks."""
         async with self._lock:
-            await self.conn.execute("DELETE FROM orders WHERE user_id = ? AND status = 'pending'", (user_id,))
-            await self.conn.commit()
+            # Query if there are actually any pending orders first, using a fast SELECT
+            async with self.conn.execute(
+                "SELECT 1 FROM orders WHERE user_id = ? AND status = 'pending' LIMIT 1",
+                (user_id,)
+            ) as cursor:
+                has_pending = await cursor.fetchone()
+
+            if has_pending:
+                # Only execute DELETE and commit if pending orders actually exist
+                await self.conn.execute("DELETE FROM orders WHERE user_id = ? AND status = 'pending'", (user_id,))
+                await self.conn.commit()
 
     async def extend_user_subscription(self, user_id: int, days: int = 30):
         async with self._lock:
