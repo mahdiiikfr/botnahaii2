@@ -14,21 +14,11 @@ logger = logging.getLogger(__name__)
 admin_router = Router()
 db = Database()
 
-# Secure Access Control: Admin only middlewares for admin_router
-@admin_router.message.outer_middleware()
-async def admin_msg_middleware(handler, event: Message, data: dict):
-    if event.from_user.id not in ADMINS:
-        return
-    return await handler(event, data)
-
-@admin_router.callback_query.outer_middleware()
-async def admin_call_middleware(handler, event: CallbackQuery, data: dict):
-    # Protect any callback query starting with adm_ or admin_
-    if event.data and (event.data.startswith("adm_") or event.data.startswith("admin_")):
-        if event.from_user.id not in ADMINS:
-            await event.answer("❌ شما دسترسی به این بخش را ندارید!", show_alert=True)
-            return
-    return await handler(event, data)
+# Secure Access Control: Admin only filters for admin_router
+# This ensures non-admin messages and callback queries are not blocked globally
+# and can safely propagate to other routers like user_router.
+admin_router.message.filter(F.from_user.id.in_(ADMINS))
+admin_router.callback_query.filter(F.from_user.id.in_(ADMINS))
 
 # FSM States for Admin Panel
 class AdminStates(StatesGroup):
