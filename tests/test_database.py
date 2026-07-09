@@ -5,7 +5,9 @@ from database.db import Database
 async def test_db():
     print("Testing upgraded database operations asynchronously...")
     db = Database()
+    print("Connecting to DB...")
     await db.connect()
+    print("Connected to DB.")
 
     # 1. Clean DB state for testing
     async with db._lock:
@@ -14,6 +16,7 @@ async def test_db():
         await db.conn.execute("DELETE FROM discount_codes;")
         await db.conn.execute("DELETE FROM tickets;")
         await db.conn.execute("DELETE FROM test_accounts;")
+        await db.conn.execute("DELETE FROM orders;")
         await db.conn.execute("DELETE FROM users;")
         await db.conn.commit()
 
@@ -74,7 +77,35 @@ async def test_db():
     print("Second pop trial result:", second_pop)
     assert second_pop == "ALREADY_USED"
 
-    # 6. Asynchronous secure hot backup testing
+    # 6. Referral Connections and Rewards Testing
+    print("Testing referral system...")
+    await db.add_user(999, "referrer_user", "Referrer User")
+    await db.add_user(888, "referred_user", "Referred User", referred_by=999)
+
+    referrer = await db.get_user(999)
+    referred = await db.get_user(888)
+
+    assert referred[7] == 999  # referred_by should be 999
+
+    ref_count = await db.get_referred_count(999)
+    assert ref_count == 1
+
+    # Create an order for referred user (with product_id = 123)
+    await db.create_order("REFORD1", 888, 123, 50000, payment_method="card")
+    await db.update_order_status("REFORD1", "approved")
+
+    # Reward referrer
+    reward_res = await db.reward_referrer_if_eligible("REFORD1")
+    assert reward_res is not None
+    ref_id, new_bal = reward_res
+    assert ref_id == 999
+    assert new_bal == 10000
+
+    # Ensure duplicate reward is blocked
+    second_reward_res = await db.reward_referrer_if_eligible("REFORD1")
+    assert second_reward_res is None
+
+    # Check database backup
     backup_file = "database/store_backup.db"
     if os.path.exists(backup_file):
         os.remove(backup_file)
