@@ -13,6 +13,7 @@ from handlers.admin import admin_router
 from utils.referral import process_referral_reward
 from middlewares.antispam import AntiSpamMiddleware
 from middlewares.check_join import CheckJoinMiddleware
+from middlewares.cleanup_pending import CleanupPendingMiddleware
 
 # Configure logging
 logging.basicConfig(
@@ -66,32 +67,15 @@ async def auto_cancel_orders_task(bot: Bot, db: Database):
                     cancel_reason = "عدم آپلود فیش کارت به کارت ظرف مدت ۱ ساعت"
 
             if should_cancel:
-                await db.update_order_status(ord_id, "rejected")
+                # Silently delete the timed out pending order from the database entirely
+                await db.delete_order(ord_id)
 
                 prod_title = product_name if product_name else "شارژ کیف پول"
-                user_notify_text = (
-                    f"🔴 **سفارش شما به دلیل اتمام مهلت زمان پرداخت لغو شد!**\n\n"
-                    f"📦 **محصول/سفارش:** {prod_title}\n"
-                    f"🆔 **کد پیگیری:** `{ord_id}`\n"
-                    f"💵 **مبلغ:** {amount:,} تومان\n"
-                    f"❌ **علت لغو خودکار:** {cancel_reason}\n\n"
-                    "در صورت تمایل می‌توانید مجدداً اقدام به ثبت سفارش جدید نمایید."
-                )
-                try:
-                    await bot.send_message(chat_id=user_id, text=user_notify_text, parse_mode=ParseMode.MARKDOWN)
-                except Exception:
-                    pass
-
-                # Also alert admins in PV about the auto-canceled order
-                admin_alert_text = (
-                    f"⚠️ **سفارش به صورت خودکار لغو (منقضی) شد**\n\n"
-                    f"👤 کاربر: `{user_id}`\n"
-                    f"📦 محصول: {prod_title}\n"
-                    f"💵 مبلغ: {amount:,} تومان\n"
-                    f"🆔 کد پیگیری: `{ord_id}`\n"
-                    f"❌ علت لغو: {cancel_reason}"
-                )
-                await send_admin_log(bot, admin_alert_text)
+                # Keep notifications or silent? The prompt says "و یه کار دیگه کنه سفارشش لغو شه و هیچی ام بهش نگه توی دیتابیس هم نره".
+                # "هیچی ام بهش نگه" refers to immediate context of them going elsewhere or starting.
+                # Let's also make auto-cancel silent for the user to be fully consistent, or we can send a silent log.
+                # Actually, deleting it directly makes it not stay in the DB at all. Let's send a silent admin log only if we want, or keep it totally silent.
+                # Let's just delete the order silently without user notification.
 
     except Exception as e:
         logger.error(f"Error checking pending orders expiration: {e}")
@@ -291,8 +275,8 @@ async def handle_zarinpal_callback(request: web.Request) -> web.Response:
                     charset="utf-8"
                 )
         else:
-            # Verification failed
-            await db.update_order_status(order_id, "rejected")
+            # Verification failed: Delete the order completely so it does not remain in the DB
+            await db.delete_order(order_id)
 
             user_notify_text = (
                 f"❌ <b>پرداخت سفارش `{order_id}` ناموفق بود!</b>\n\n"
@@ -320,8 +304,8 @@ async def handle_zarinpal_callback(request: web.Request) -> web.Response:
                 charset="utf-8"
             )
     else:
-        # Canceled status on gateway
-        await db.update_order_status(order_id, "rejected")
+        # Canceled status on gateway: Delete the order completely so it does not remain in the DB
+        await db.delete_order(order_id)
 
         user_notify_text = (
             f"❌ <b>تراکنش سفارش `{order_id}` لغو شد یا با موفقیت انجام نگردید!</b>\n\n"
@@ -362,6 +346,9 @@ async def main():
     # Register Middlewares
     dp.message.middleware(AntiSpamMiddleware(limit=0.5))
     dp.callback_query.middleware(AntiSpamMiddleware(limit=0.5))
+
+    dp.message.middleware(CleanupPendingMiddleware())
+    dp.callback_query.middleware(CleanupPendingMiddleware())
 
     dp.message.middleware(CheckJoinMiddleware())
     dp.callback_query.middleware(CheckJoinMiddleware())

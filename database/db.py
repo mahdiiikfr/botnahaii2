@@ -455,10 +455,22 @@ class Database:
     async def get_user_orders(self, user_id: int):
         async with self._lock:
             async with self.conn.execute(
-                "SELECT o.id, p.name, o.amount, o.status, o.created_at FROM orders o JOIN products p ON o.product_id = p.id WHERE o.user_id = ? ORDER BY o.created_at DESC",
+                "SELECT o.id, p.name, o.amount, o.status, o.created_at FROM orders o JOIN products p ON o.product_id = p.id WHERE o.user_id = ? AND o.status != 'rejected' ORDER BY o.created_at DESC",
                 (user_id,)
             ) as cursor:
                 return await cursor.fetchall()
+
+    async def delete_order(self, order_id: str):
+        """Deletes a specific order from the database permanently."""
+        async with self._lock:
+            await self.conn.execute("DELETE FROM orders WHERE id = ?", (order_id,))
+            await self.conn.commit()
+
+    async def delete_pending_orders(self, user_id: int):
+        """Silently deletes all pending orders for a given user."""
+        async with self._lock:
+            await self.conn.execute("DELETE FROM orders WHERE user_id = ? AND status = 'pending'", (user_id,))
+            await self.conn.commit()
 
     async def extend_user_subscription(self, user_id: int, days: int = 30):
         async with self._lock:

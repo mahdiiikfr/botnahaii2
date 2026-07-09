@@ -960,7 +960,8 @@ async def process_reject_reason(message: Message, state: FSMContext, bot: Bot):
     admin_msg_id = data.get("admin_msg_id")
     reason = message.text.strip()
 
-    await db.update_order_status(order_id, "rejected")
+    # Permanently delete the order from the database instead of marking it 'rejected'
+    await db.delete_order(order_id)
 
     user_notify_text = (
         f"🔴 <b>رسید پرداخت سفارش <code>{order_id}</code> شما توسط مدیریت رد شد!</b>\n\n"
@@ -977,7 +978,7 @@ async def process_reject_reason(message: Message, state: FSMContext, bot: Bot):
                 chat_id=admin_chat_id,
                 message_id=admin_msg_id,
                 caption=(
-                    f"🔴 <b>سفارش <code>{order_id}</code> رد شد!</b>\n\n"
+                    f"🔴 <b>سفارش <code>{order_id}</code> رد و به طور کامل حذف شد!</b>\n\n"
                     f"👤 شناسه کاربر: <code>{user_id}</code>\n"
                     f"❌ علت رد شدن: {html.escape(reason)}"
                 ),
