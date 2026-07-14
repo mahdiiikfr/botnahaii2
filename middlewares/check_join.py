@@ -6,7 +6,12 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.enums import ButtonStyle
 from config.config import REQUIRED_CHANNEL, REQUIRED_CHANNEL_LINK, ADMINS
 
+import time
+
 logger = logging.getLogger(__name__)
+
+# Global cache to cache successful join status for 2 minutes (120 seconds) to avoid Bot API call hanging
+JOIN_CACHE = {}
 
 class CheckJoinMiddleware(BaseMiddleware):
     async def __call__(
@@ -31,6 +36,13 @@ class CheckJoinMiddleware(BaseMiddleware):
             if user_id in ADMINS:
                 return await handler(event, data)
 
+            # Check cache first
+            now = time.time()
+            if user_id in JOIN_CACHE:
+                cached_time = JOIN_CACHE[user_id]
+                if now - cached_time < 120:  # Cache valid for 2 minutes
+                    return await handler(event, data)
+
             bot = data["bot"]
             try:
                 # Force a strict 2.0 second timeout on get_chat_member to prevent network hanging
@@ -40,6 +52,9 @@ class CheckJoinMiddleware(BaseMiddleware):
                 )
                 if member.status in ["kicked", "left"]:
                     return await self._show_join_message(event, bot)
+                else:
+                    # Successfully verified, save to cache
+                    JOIN_CACHE[user_id] = now
             except Exception as e:
                 # If bot is not administrator, channel doesn't exist, or call times out/fails,
                 # log the error and allow the user to proceed gracefully so the bot doesn't hang!

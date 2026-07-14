@@ -117,6 +117,11 @@ async def check_membership_cb(call: CallbackQuery, bot: Bot):
     try:
         member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=user_id)
         if member.status not in ["kicked", "left"]:
+            # Update verification cache immediately so CheckJoinMiddleware bypasses the lookup
+            from middlewares.check_join import JOIN_CACHE
+            import time
+            JOIN_CACHE[user_id] = time.time()
+
             await call.answer("🟢 عضویت شما تایید شد! خوش آمدید.", show_alert=True)
             await call.message.edit_text(
                 get_welcome_text(call.from_user.full_name),
