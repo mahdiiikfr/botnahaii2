@@ -30,24 +30,57 @@ def get_categories_keyboard(categories: list, user_id: int) -> InlineKeyboardMar
     for i in range(0, len(categories), 2):
         row = []
         cat1 = categories[i]
-        row.append(InlineKeyboardButton(text=f"📂 {cat1[1]}", callback_data=f"cat_{cat1[0]}"))
+        # Categories are already formatted beautifully with emojis
+        row.append(InlineKeyboardButton(text=f"{cat1[1]}", callback_data=f"cat_{cat1[0]}"))
         if i + 1 < len(categories):
             cat2 = categories[i+1]
-            row.append(InlineKeyboardButton(text=f"📂 {cat2[1]}", callback_data=f"cat_{cat2[0]}"))
+            row.append(InlineKeyboardButton(text=f"{cat2[1]}", callback_data=f"cat_{cat2[0]}"))
         buttons.append(row)
 
-    buttons.append([InlineKeyboardButton(text="🔙 بازگشت به خانه", callback_data="go_home", style=ButtonStyle.DANGER)])
+    buttons.append([InlineKeyboardButton(text="🔙 بازگشت به منوی خانه 🏠", callback_data="go_home", style=ButtonStyle.DANGER)])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_products_keyboard(products: list, category_id: int) -> InlineKeyboardMarkup:
     buttons = []
     for prod in products:
         price_formatted = f"{prod[3]:,}"
+        name = prod[1]
+
+        # Colorful bullet matching the product theme to make them beautifully colorful & رنگابرنگ
+        emoji = "🔹"
+        if "دامنه" in name:
+            if ".ir" in name:
+                emoji = "🇮🇷"
+            elif ".xyz" in name:
+                emoji = "🚀"
+            elif ".shop" in name:
+                emoji = "🛒"
+            else:
+                emoji = "🌐"
+        elif "فیلترشکن" in name:
+            emoji = "⚡"
+        elif "سنایی" in name:
+            emoji = "🛠️"
+        elif "سرور" in name:
+            if "۲ هسته" in name:
+                emoji = "🔥"
+            elif "۴ هسته" in name:
+                emoji = "👑"
+            else:
+                emoji = "💻"
+        elif "جیمینای" in name:
+            if "12" in name:
+                emoji = "🤖"
+            else:
+                emoji = "🧠"
+        elif "راهنمایی" in name:
+            emoji = "💡"
+
         buttons.append([
-            InlineKeyboardButton(text=f"🔹 {prod[1]} - {price_formatted} تومان", callback_data=f"prod_{prod[0]}")
+            InlineKeyboardButton(text=f"{emoji} {name} | {price_formatted} تومان", callback_data=f"prod_{prod[0]}")
         ])
     buttons.append([
-        InlineKeyboardButton(text="🔙 بازگشت به دسته‌بندی‌ها", callback_data="categories_list", style=ButtonStyle.DANGER)
+        InlineKeyboardButton(text="🔙 بازگشت به دسته‌بندی‌ها 📁", callback_data="categories_list", style=ButtonStyle.DANGER)
     ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 

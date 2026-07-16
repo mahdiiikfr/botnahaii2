@@ -137,32 +137,37 @@ async def check_membership_cb(call: CallbackQuery, bot: Bot):
 @user_router.callback_query(F.data == "categories_list")
 async def categories_list_cb(call: CallbackQuery):
     await show_loading(call)
-    # Direct list of custom seeded products
-    async with db._lock:
-        async with db.conn.execute("SELECT id, name, description, price, auto_deliver FROM products ORDER BY id ASC") as cursor:
-            products = await cursor.fetchall()
-
-    if not products:
+    categories = await db.get_categories()
+    if not categories:
         await call.message.edit_text(
-            "⚠️ هنوز هیچ محصولی تعریف نشده است.",
+            "⚠️ هنوز هیچ دسته‌بندی فعالی تعریف نشده است.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔙 بازگشت به خانه", callback_data="go_home", style=ButtonStyle.DANGER)]
             ])
         )
         return
-
-    # Use a custom 1-column layout keyboard to display the 5 static products directly inside "فروشگاه"
-    buttons = []
-    for prod in products:
-        price_formatted = f"{prod[3]:,}"
-        buttons.append([
-            InlineKeyboardButton(text=f"🔹 {prod[1]} - {price_formatted} تومان", callback_data=f"prod_{prod[0]}")
-        ])
-    buttons.append([InlineKeyboardButton(text="🔙 بازگشت به خانه", callback_data="go_home", style=ButtonStyle.DANGER)])
-
     await call.message.edit_text(
-        "🛒 <b>لیست محصولات فروشگاه ما:</b>\n\nلطفاً محصول مورد نظر خود را انتخاب کنید 👇",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        "🗂️ <b>دسته‌بندی مورد نظر خود را انتخاب کنید:</b>",
+        reply_markup=get_categories_keyboard(categories, call.from_user.id),
+        parse_mode=ParseMode.HTML
+    )
+
+@user_router.callback_query(F.data.startswith("cat_"))
+async def category_products_cb(call: CallbackQuery):
+    await show_loading(call)
+    category_id = int(call.data.split("_")[1])
+    products = await db.get_products_by_category(category_id)
+    if not products:
+        await call.message.edit_text(
+            "⚠️ در این دسته‌بندی هنوز محصولی ثبت نشده است.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 بازگشت به دسته‌بندی‌ها", callback_data="categories_list", style=ButtonStyle.DANGER)]
+            ])
+        )
+        return
+    await call.message.edit_text(
+        "🛒 <b>محصولات موجود در این بخش:</b>",
+        reply_markup=get_products_keyboard(products, category_id),
         parse_mode=ParseMode.HTML
     )
 
