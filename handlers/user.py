@@ -137,37 +137,32 @@ async def check_membership_cb(call: CallbackQuery, bot: Bot):
 @user_router.callback_query(F.data == "categories_list")
 async def categories_list_cb(call: CallbackQuery):
     await show_loading(call)
-    categories = await db.get_categories()
-    if not categories:
+    # Direct list of custom seeded products
+    async with db._lock:
+        async with db.conn.execute("SELECT id, name, description, price, auto_deliver FROM products ORDER BY id ASC") as cursor:
+            products = await cursor.fetchall()
+
+    if not products:
         await call.message.edit_text(
-            "⚠️ هنوز هیچ دسته‌بندی فعالی تعریف نشده است.",
+            "⚠️ هنوز هیچ محصولی تعریف نشده است.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔙 بازگشت به خانه", callback_data="go_home", style=ButtonStyle.DANGER)]
             ])
         )
         return
-    await call.message.edit_text(
-        "🗂️ <b>دسته‌بندی مورد نظر خود را انتخاب کنید:</b>",
-        reply_markup=get_categories_keyboard(categories, call.from_user.id),
-        parse_mode=ParseMode.HTML
-    )
 
-@user_router.callback_query(F.data.startswith("cat_"))
-async def category_products_cb(call: CallbackQuery):
-    await show_loading(call)
-    category_id = int(call.data.split("_")[1])
-    products = await db.get_products_by_category(category_id)
-    if not products:
-        await call.message.edit_text(
-            "⚠️ در این دسته‌بندی هنوز محصولی ثبت نشده است.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🔙 بازگشت به دسته‌بندی‌ها", callback_data="categories_list", style=ButtonStyle.DANGER)]
-            ])
-        )
-        return
+    # Use a custom 1-column layout keyboard to display the 5 static products directly inside "فروشگاه"
+    buttons = []
+    for prod in products:
+        price_formatted = f"{prod[3]:,}"
+        buttons.append([
+            InlineKeyboardButton(text=f"🔹 {prod[1]} - {price_formatted} تومان", callback_data=f"prod_{prod[0]}")
+        ])
+    buttons.append([InlineKeyboardButton(text="🔙 بازگشت به خانه", callback_data="go_home", style=ButtonStyle.DANGER)])
+
     await call.message.edit_text(
-        "🛒 <b>محصولات موجود در این بخش:</b>",
-        reply_markup=get_products_keyboard(products, category_id),
+        "🛒 <b>لیست محصولات فروشگاه ما:</b>\n\nلطفاً محصول مورد نظر خود را انتخاب کنید 👇",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         parse_mode=ParseMode.HTML
     )
 
@@ -703,7 +698,7 @@ async def support_info_cb(call: CallbackQuery):
     support_text = (
         "📞 <b>پشتیبانی و ثبت تیکت</b>\n\n"
         "همکاران ما به صورت ۲۴ ساعته پاسخگوی شما خواهند بود. علاوه بر پی‌وی، می‌توانید تیکت خود را مستقیماً از داخل ربات ثبت کنید تا مدیریت به آن پاسخ دهد.\n\n"
-        "💬 ایدی پشتیبانی اصلی: @support_user\n\n"
+        "💬 ایدی پشتیبانی اصلی: @ajaxiran_ir\n\n"
         "جهت ارسال تیکت مستقیم روی دکمه زیر کلیک کنید 👇"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -751,13 +746,19 @@ async def process_ticket_message(message: Message, state: FSMContext, bot: Bot):
         f"🆔 <b>شناسه کاربر:</b> <code>{message.from_user.id}</code>\n"
         f"🆔 <b>شناسه تیکت:</b> <code>{ticket_id}</code>\n\n"
         f"📝 <b>متن تیکت:</b>\n<code>{escaped_ticket_msg}</code>\n\n"
-        "جهت پاسخ دادن به تیکت، از بخش «مدیریت تیکت‌ها» در پنل مدیریت ربات اقدام کنید."
+        "جهت پاسخ دادن مستقیم به این تیکت روی دکمه زیر کلیک کنید 👇"
     )
 
-    # Send ticket notification directly to the PV of all registered admins
+    admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✍️ پاسخ دادن به تیکت", callback_data=f"adm_reply_tkt_{ticket_id}", style=ButtonStyle.PRIMARY)
+        ]
+    ])
+
+    # Send ticket notification directly to the PV of all registered admins with inline action
     for admin_id in ADMINS:
         try:
-            await bot.send_message(chat_id=admin_id, text=admin_alert, parse_mode=ParseMode.HTML)
+            await bot.send_message(chat_id=admin_id, text=admin_alert, reply_markup=admin_keyboard, parse_mode=ParseMode.HTML)
             logger.info(f"Delivered ticket {ticket_id} directly to admin {admin_id} PV.")
         except Exception as e_pv:
             logger.error(f"Failed direct delivery of ticket {ticket_id} to admin {admin_id} PV: {e_pv}")
