@@ -34,34 +34,28 @@ class Database:
                 logger.info("Disconnected from SQLite database.")
 
     async def _seed_static_products(self):
-        # We will seed the 5 requested products with fixed IDs.
+        # We will seed the 6 requested products with fixed IDs.
         # Since categories are no longer dynamic, we can set category_id = NULL or a dummy category.
         # Let's seed the dummy category first to satisfy foreign key constraints.
         await self.conn.execute("INSERT OR IGNORE INTO categories (id, name) VALUES (1, 'پیش‌فرض')")
 
+        # Clean up any potential leftover products from previous ID layout to avoid clashes or stale rows
+        await self.conn.execute("DELETE FROM products;")
+
         static_products = [
-            (1, 1, "دامنست", "ثبت و تمدید انواع دامنه ملی و بین‌المللی با بهترین قیمت", 300000, 0),
-            (2, 1, "فیلترشکن نامحدوده تک کاربره", "فیلترشکن فوق‌العاده پرسرعت و بدون محدودیت حجم ویژه تک کاربره", 150000, 0),
-            (3, 1, "ساخت و کانفیگ پنل سنایی", "نصب، راه‌اندازی و کانفیگ حرفه‌ای پنل سنایی روی سرور مجازی", 500000, 0),
-            (4, 1, "سرور ایران مشخصات رم 2 سی پی یو 1 حافظه 40", "سرور ایران با مشخصات فوق‌العاده قوی و پایدار.\n\n⚠️ برای مشخصات قوی‌تر به پشتیبانی پیام بدهید یا تیکت بزنید.", 1500000, 0),
-            (5, 1, "راهنمایی و رفع مشکلات مرتبط با پنل‌ها و فیلترشکن", "حل و رفع تمامی ارورها، عیب‌یابی و مشکلات مربوط به راه‌اندازی پنل‌های فیلترشکن", 250000, 0)
+            (1, 1, "دامنه ملی .ir", "ثبت و تمدید دامنه ملی دات آی‌آر با بهترین قیمت", 300000, 0),
+            (2, 1, "دامنه بین‌المللی .xyz / .shop", "ثبت و تمدید دامنه‌های بین‌المللی (.xyz / .shop) با بهترین قیمت", 1000000, 0),
+            (3, 1, "فیلترشکن نامحدوده تک کاربره", "فیلترشکن فوق‌العاده پرسرعت و بدون محدودیت حجم ویژه تک کاربره", 150000, 0),
+            (4, 1, "ساخت و کانفیگ پنل سنایی", "نصب، راه‌اندازی و کانفیگ حرفه‌ای پنل سنایی روی سرور مجازی", 500000, 0),
+            (5, 1, "سرور ایران مشخصات رم 2 سی پی یو 1 حافظه 40", "سرور ایران با مشخصات فوق‌العاده قوی و پایدار.\n\n⚠️ برای مشخصات قوی‌تر به پشتیبانی پیام بدهید یا تیکت بزنید.", 1500000, 0),
+            (6, 1, "راهنمایی و رفع مشکلات مرتبط با پنل‌ها و فیلترشکن", "حل و رفع تمامی ارورها، عیب‌یابی و مشکلات مربوط به راه‌اندازی پنل‌های فیلترشکن", 250000, 0)
         ]
 
         for p_id, cat_id, name, desc, price, auto_deliver in static_products:
-            # Let's check if product already exists to preserve custom changes or overwrite/insert
-            async with self.conn.execute("SELECT id FROM products WHERE id = ?", (p_id,)) as cursor:
-                exists = await cursor.fetchone()
-            if not exists:
-                await self.conn.execute(
-                    "INSERT INTO products (id, category_id, name, description, price, auto_deliver) VALUES (?, ?, ?, ?, ?, ?)",
-                    (p_id, cat_id, name, desc, price, auto_deliver)
-                )
-            else:
-                # Keep details updated
-                await self.conn.execute(
-                    "UPDATE products SET name = ?, description = ?, price = ?, auto_deliver = ? WHERE id = ?",
-                    (name, desc, price, auto_deliver, p_id)
-                )
+            await self.conn.execute(
+                "INSERT OR REPLACE INTO products (id, category_id, name, description, price, auto_deliver) VALUES (?, ?, ?, ?, ?, ?)",
+                (p_id, cat_id, name, desc, price, auto_deliver)
+            )
         await self.conn.commit()
 
     async def _create_tables(self):

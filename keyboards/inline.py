@@ -52,13 +52,13 @@ def get_products_keyboard(products: list, category_id: int) -> InlineKeyboardMar
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_product_details_keyboard(product_id: int, category_id: int) -> InlineKeyboardMarkup:
-    # If product is VPN Single User (ID 2), we add a Free Test Trial Button as requested!
+    # If product is VPN Single User (ID 3), we add a Free Test Trial Button as requested!
     buttons = [
         [
             InlineKeyboardButton(text="💳 خرید و پرداخت", callback_data=f"buy_{product_id}", style=ButtonStyle.SUCCESS)
         ]
     ]
-    if product_id == 2:
+    if product_id == 3:
         buttons.append([
             InlineKeyboardButton(text="🎁 دریافت اکانت تست VPN", callback_data="free_test_account", style=ButtonStyle.PRIMARY)
         ])
