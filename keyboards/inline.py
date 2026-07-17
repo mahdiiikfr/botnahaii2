@@ -108,12 +108,9 @@ def get_payment_methods_keyboard(order_id: str, product_id: int, allow_wallet: b
         ])
 
     buttons.append([
-        InlineKeyboardButton(text="🔗 پرداخت آنلاین زرین‌پال", callback_data=f"pay_zarinpal_{order_id}", style=ButtonStyle.PRIMARY)
-    ])
-    buttons.append([
         InlineKeyboardButton(text="💳 کارت به کارت (آپلود رسید)", callback_data=f"pay_card_{order_id}", style=ButtonStyle.PRIMARY)
     ])
-    # Discount buttons have been removed as requested: "کد تخفیف نمیخواد حذف کن"
+    # Discount buttons and ZarinPal online gateway have been removed as requested!
     buttons.append([
         InlineKeyboardButton(text="🔙 انصراف و بازگشت", callback_data="categories_list", style=ButtonStyle.DANGER)
     ])
