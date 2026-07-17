@@ -21,9 +21,14 @@ env = load_env()
 BOT_TOKEN = env.get("BOT_TOKEN", "8933190577:AAEUNcotham2d1UEGA7maE0L4J_41KJFgIo")
 
 # Admin IDs list
-ADMINS = [
-    int(env.get("ADMIN_ID", "8969258358"))
-]
+try:
+    _admin_id_str = env.get("ADMIN_ID", "").strip()
+    if _admin_id_str:
+        ADMINS = [int(_admin_id_str)]
+    else:
+        ADMINS = [8969258358]
+except Exception:
+    ADMINS = [8969258358]
 
 # Database Configuration
 DB_FILE = env.get("DB_FILE", "database/store.db")
@@ -33,7 +38,14 @@ REQUIRED_CHANNEL = env.get("REQUIRED_CHANNEL", "@applevpnio")  # Telegram channe
 REQUIRED_CHANNEL_LINK = env.get("REQUIRED_CHANNEL_LINK", "https://t.me/applevpnio") # Channel link
 
 # Admin Log/Backup Channel ID (where all logs are routed)
-ADMIN_LOG_CHANNEL = int(env.get("BACKUP_CHANNEL_ID", "-1004307401227"))
+try:
+    _backup_id_str = env.get("BACKUP_CHANNEL_ID", "").strip()
+    if _backup_id_str:
+        ADMIN_LOG_CHANNEL = int(_backup_id_str)
+    else:
+        ADMIN_LOG_CHANNEL = -1004307401227
+except Exception:
+    ADMIN_LOG_CHANNEL = -1004307401227
 
 # ZarinPal Configuration
 ZARINPAL_MERCHANT_ID = env.get("ZARINPAL_MERCHANT", "22084777-e799-400c-b57d-8a28aa22fadf")
@@ -45,7 +57,14 @@ CARD_NUMBER = env.get("CARD_NUMBER", "6219861913428198")
 CARD_HOLDER = env.get("CARD_HOLDER", "پشتیبانی")
 
 # Web server port for ZarinPal callbacks
-WEB_PORT = int(env.get("WEB_PORT", "8080"))
+try:
+    _port_str = env.get("WEB_PORT", "").strip()
+    if _port_str:
+        WEB_PORT = int(_port_str)
+    else:
+        WEB_PORT = 8080
+except Exception:
+    WEB_PORT = 8080
 
 # Throttling click and messaging limit
 THROTTLING_RATE_LIMIT = float(env.get("THROTTLING_RATE_LIMIT", "0.8"))
