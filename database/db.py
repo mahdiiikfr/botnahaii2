@@ -33,6 +33,45 @@ class Database:
                 self.conn = None
                 logger.info("Disconnected from SQLite database.")
 
+    async def _seed_static_products(self):
+        # Clean up any potential leftover products and categories to ensure fresh layout
+        await self.conn.execute("DELETE FROM products;")
+        await self.conn.execute("DELETE FROM categories;")
+
+        # Seed the 5 custom categories
+        categories = [
+            (1, "🌐 ثبت دامنه"),
+            (2, "🛡️ فیلترشکن"),
+            (3, "⚙️ خدمات پنل و سرور"),
+            (4, "🤖 هوش مصنوعی (Gemini)"),
+            (5, "🤝 پنل همکاری")
+        ]
+        for c_id, name in categories:
+            await self.conn.execute("INSERT OR REPLACE INTO categories (id, name) VALUES (?, ?)", (c_id, name))
+
+        static_products = [
+            (1, 1, "دامنه ملی .ir", "ثبت و تمدید دامنه ملی دات آی‌آر با بهترین قیمت", 400000, 0),
+            (2, 1, "دامنه .xyz", "ثبت و تمدید دامنه بین‌المللی دات ایکس‌وای‌زد (.xyz) با بهترین قیمت", 1000000, 0),
+            (3, 1, "دامنه .shop", "ثبت و تمدید دامنه بین‌المللی دات شاپ (.shop) با بهترین قیمت", 1000000, 0),
+            (4, 2, "فیلترشکن نامحدوده تک کاربره", "فیلترشکن فوق‌العاده پرسرعت و بدون محدودیت حجم ویژه تک کاربره", 150000, 0),
+            (5, 3, "ساخت و کانفیگ پنل سنایی", "نصب، راه‌اندازی و کانفیگ حرفه‌ای پنل سنایی روی سرور مجازی", 500000, 0),
+            (6, 3, "سرور ایران مشخصات رم 2 سی پی یو 1 حافظه 40", "سرور ایران با مشخصات فوق‌العاده قوی و پایدار.\n\n⚠️ برای مشخصات قوی‌تر به پشتیبانی پیام بدهید یا تیکت بزنید.", 1500000, 0),
+            (7, 3, "سرور ایران ۲ هسته ۴ گیگ ۴۰ گیگابایت", "سرور مجازی ایران با عملکرد و سرعت بسیار عالی.\n\n⚠️ برای مشخصات قوی‌تر به پشتیبانی پیام بدهید یا تیکت بزنید.", 2200000, 0),
+            (8, 3, "سرور ایران ۴ هسته ۸ گیگ ۴۰ گیگ حافظه", "سرور مجازی ایران فوق‌العاده قدرتمند مخصوص کارهای سنگین.\n\n⚠️ برای مشخصات قوی‌تر به پشتیبانی پیام بدهید یا تیکت بزنید.", 3200000, 0),
+            (9, 4, "اشتراک جیمینای 12 ماهه", "خرید اشتراک ۱۲ ماهه هوش مصنوعی گوگل جیمینای (Gemini) با دسترسی کامل به امکانات ویژه", 2000000, 0),
+            (10, 4, "اشتراک جیمینای 18 ماهه", "خرید اشتراک ۱۸ ماهه هوش مصنوعی گوگل جیمینای (Gemini) با دسترسی کامل به امکانات ویژه", 2500000, 0),
+            (11, 3, "راهنمایی و رفع مشکلات مرتبط با پنل‌ها و فیلترشکن", "حل و رفع تمامی ارورها، عیب‌یابی و مشکلات مربوط به راه‌اندازی پنل‌های فیلترشکن", 250000, 0),
+            (12, 5, "دامنه .ir (پنل همکاری)", "ثبت و تمدید دامنه ملی دات آی‌آر با تعرفه ویژه پنل همکاری و نمایندگی", 300000, 0),
+            (13, 5, "فیلترشکن نامحدود (پنل همکاری)", "فیلترشکن فوق‌العاده پرسرعت و بدون محدودیت حجم ویژه نمایندگان و همکاران گرامی", 50000, 0)
+        ]
+
+        for p_id, cat_id, name, desc, price, auto_deliver in static_products:
+            await self.conn.execute(
+                "INSERT OR REPLACE INTO products (id, category_id, name, description, price, auto_deliver) VALUES (?, ?, ?, ?, ?, ?)",
+                (p_id, cat_id, name, desc, price, auto_deliver)
+            )
+        await self.conn.commit()
+
     async def _create_tables(self):
         # Create users table with wallet balance, test_account_used, and referred_by columns
         await self.conn.execute("""
@@ -59,7 +98,7 @@ class Database:
         # Create products table
         await self.conn.execute("""
             CREATE TABLE IF NOT EXISTS products (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id INTEGER PRIMARY KEY,
                 category_id INTEGER,
                 name TEXT NOT NULL,
                 description TEXT,
@@ -175,6 +214,9 @@ class Database:
         await self.conn.execute("CREATE INDEX IF NOT EXISTS idx_products_category_id ON products (category_id);")
         await self.conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders (user_id);")
         await self.conn.commit()
+
+        # Seed static products on table creation/connection init
+        await self._seed_static_products()
 
     # --- Secure Hot Backup Asynchronously ---
     async def backup(self, backup_filepath: str):

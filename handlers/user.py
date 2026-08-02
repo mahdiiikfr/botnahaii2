@@ -703,7 +703,7 @@ async def support_info_cb(call: CallbackQuery):
     support_text = (
         "📞 <b>پشتیبانی و ثبت تیکت</b>\n\n"
         "همکاران ما به صورت ۲۴ ساعته پاسخگوی شما خواهند بود. علاوه بر پی‌وی، می‌توانید تیکت خود را مستقیماً از داخل ربات ثبت کنید تا مدیریت به آن پاسخ دهد.\n\n"
-        "💬 ایدی پشتیبانی اصلی: @support_user\n\n"
+        "💬 ایدی پشتیبانی اصلی: @ajaxiran_ir\n\n"
         "جهت ارسال تیکت مستقیم روی دکمه زیر کلیک کنید 👇"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -751,13 +751,19 @@ async def process_ticket_message(message: Message, state: FSMContext, bot: Bot):
         f"🆔 <b>شناسه کاربر:</b> <code>{message.from_user.id}</code>\n"
         f"🆔 <b>شناسه تیکت:</b> <code>{ticket_id}</code>\n\n"
         f"📝 <b>متن تیکت:</b>\n<code>{escaped_ticket_msg}</code>\n\n"
-        "جهت پاسخ دادن به تیکت، از بخش «مدیریت تیکت‌ها» در پنل مدیریت ربات اقدام کنید."
+        "جهت پاسخ دادن مستقیم به این تیکت روی دکمه زیر کلیک کنید 👇"
     )
 
-    # Send ticket notification directly to the PV of all registered admins
+    admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✍️ پاسخ دادن به تیکت", callback_data=f"adm_reply_tkt_{ticket_id}", style=ButtonStyle.PRIMARY)
+        ]
+    ])
+
+    # Send ticket notification directly to the PV of all registered admins with inline action
     for admin_id in ADMINS:
         try:
-            await bot.send_message(chat_id=admin_id, text=admin_alert, parse_mode=ParseMode.HTML)
+            await bot.send_message(chat_id=admin_id, text=admin_alert, reply_markup=admin_keyboard, parse_mode=ParseMode.HTML)
             logger.info(f"Delivered ticket {ticket_id} directly to admin {admin_id} PV.")
         except Exception as e_pv:
             logger.error(f"Failed direct delivery of ticket {ticket_id} to admin {admin_id} PV: {e_pv}")

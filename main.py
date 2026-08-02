@@ -31,54 +31,6 @@ async def send_admin_log(bot: Bot, text: str):
         except Exception as e:
             logger.error(f"Failed to send admin log to admin {admin_id}: {e}")
 
-# --- Background Order Auto-Cancel Task ---
-async def auto_cancel_orders_task(bot: Bot, db: Database):
-    """Background task to periodically auto-cancel pending orders that have timed out."""
-    try:
-        from datetime import datetime, timedelta
-        # Get all pending orders
-        async with db._lock:
-            # Let's retrieve all pending orders
-            async with db.conn.execute(
-                """SELECT o.id, o.user_id, o.amount, o.payment_method, o.receipt_file_id, o.created_at, p.name
-                   FROM orders o LEFT JOIN products p ON o.product_id = p.id WHERE o.status = 'pending'"""
-            ) as cursor:
-                pending_orders = await cursor.fetchall()
-
-        now = datetime.now()
-        for ord_id, user_id, amount, pay_method, receipt_file_id, created_at_str, product_name in pending_orders:
-            try:
-                created_at = datetime.strptime(created_at_str, "%Y-%m-%d %H:%M:%S")
-            except Exception:
-                continue
-
-            should_cancel = False
-            cancel_reason = ""
-
-            if pay_method == "zarinpal":
-                # Cancel ZarinPal orders after 10 minutes
-                if now - created_at > timedelta(minutes=10):
-                    should_cancel = True
-                    cancel_reason = "عدم پرداخت درگاه آنلاین ظرف مدت ۱۰ دقیقه"
-            elif pay_method == "card":
-                # Cancel card orders after 1 hour if no receipt has been uploaded
-                if receipt_file_id is None and (now - created_at > timedelta(hours=1)):
-                    should_cancel = True
-                    cancel_reason = "عدم آپلود فیش کارت به کارت ظرف مدت ۱ ساعت"
-
-            if should_cancel:
-                # Silently delete the timed out pending order from the database entirely
-                await db.delete_order(ord_id)
-
-                prod_title = product_name if product_name else "شارژ کیف پول"
-                # Keep notifications or silent? The prompt says "و یه کار دیگه کنه سفارشش لغو شه و هیچی ام بهش نگه توی دیتابیس هم نره".
-                # "هیچی ام بهش نگه" refers to immediate context of them going elsewhere or starting.
-                # Let's also make auto-cancel silent for the user to be fully consistent, or we can send a silent log.
-                # Actually, deleting it directly makes it not stay in the DB at all. Let's send a silent admin log only if we want, or keep it totally silent.
-                # Let's just delete the order silently without user notification.
-
-    except Exception as e:
-        logger.error(f"Error checking pending orders expiration: {e}")
 
 
 # --- Background Subscriptions Task ---
@@ -365,14 +317,8 @@ async def main():
         hours=12,
         args=[bot, db]
     )
-    scheduler.add_job(
-        auto_cancel_orders_task,
-        "interval",
-        minutes=1,
-        args=[bot, db]
-    )
     scheduler.start()
-    logger.info("Background subscription and order auto-cancel scheduler tasks started.")
+    logger.info("Background subscription scheduler task started.")
 
     # Setup AIOHTTP Web Server for ZarinPal callbacks running side-by-side
     app = web.Application()

@@ -12,8 +12,7 @@ def get_main_keyboard(user_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="👛 کیف پول من", callback_data="my_wallet", style=ButtonStyle.PRIMARY)
         ],
         [
-            InlineKeyboardButton(text="👥 کسب درآمد (دعوت)", callback_data="referral_program", style=ButtonStyle.SUCCESS),
-            InlineKeyboardButton(text="🎁 تست رایگان", callback_data="free_test_account", style=ButtonStyle.SUCCESS)
+            InlineKeyboardButton(text="👥 کسب درآمد (دعوت)", callback_data="referral_program", style=ButtonStyle.SUCCESS)
         ],
         [
             InlineKeyboardButton(text="🎫 ثبت تیکت پشتیبانی", callback_data="support_info", style=ButtonStyle.PRIMARY)
@@ -22,11 +21,7 @@ def get_main_keyboard(user_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="👤 حساب کاربری", callback_data="user_profile", style=ButtonStyle.PRIMARY)
         ]
     ]
-    # Add Admin Panel button if the user is an admin
-    if user_id in ADMINS:
-        buttons.append([
-            InlineKeyboardButton(text="⚙️ پنل مدیریت ربات", callback_data="admin_panel", style=ButtonStyle.DANGER)
-        ])
+    # Admin Panel button is removed entirely as requested by user
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_categories_keyboard(categories: list, user_id: int) -> InlineKeyboardMarkup:
@@ -35,36 +30,75 @@ def get_categories_keyboard(categories: list, user_id: int) -> InlineKeyboardMar
     for i in range(0, len(categories), 2):
         row = []
         cat1 = categories[i]
-        row.append(InlineKeyboardButton(text=f"📂 {cat1[1]}", callback_data=f"cat_{cat1[0]}"))
+        # Categories are already formatted beautifully with emojis
+        row.append(InlineKeyboardButton(text=f"{cat1[1]}", callback_data=f"cat_{cat1[0]}"))
         if i + 1 < len(categories):
             cat2 = categories[i+1]
-            row.append(InlineKeyboardButton(text=f"📂 {cat2[1]}", callback_data=f"cat_{cat2[0]}"))
+            row.append(InlineKeyboardButton(text=f"{cat2[1]}", callback_data=f"cat_{cat2[0]}"))
         buttons.append(row)
 
-    buttons.append([InlineKeyboardButton(text="🔙 بازگشت به خانه", callback_data="go_home", style=ButtonStyle.DANGER)])
+    buttons.append([InlineKeyboardButton(text="🔙 بازگشت به منوی خانه 🏠", callback_data="go_home", style=ButtonStyle.DANGER)])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_products_keyboard(products: list, category_id: int) -> InlineKeyboardMarkup:
     buttons = []
     for prod in products:
         price_formatted = f"{prod[3]:,}"
+        name = prod[1]
+
+        # Colorful bullet matching the product theme to make them beautifully colorful & رنگابرنگ
+        emoji = "🔹"
+        if "دامنه" in name:
+            if ".ir" in name:
+                emoji = "🇮🇷"
+            elif ".xyz" in name:
+                emoji = "🚀"
+            elif ".shop" in name:
+                emoji = "🛒"
+            else:
+                emoji = "🌐"
+        elif "فیلترشکن" in name:
+            emoji = "⚡"
+        elif "سنایی" in name:
+            emoji = "🛠️"
+        elif "سرور" in name:
+            if "۲ هسته" in name:
+                emoji = "🔥"
+            elif "۴ هسته" in name:
+                emoji = "👑"
+            else:
+                emoji = "💻"
+        elif "جیمینای" in name:
+            if "12" in name:
+                emoji = "🤖"
+            else:
+                emoji = "🧠"
+        elif "راهنمایی" in name:
+            emoji = "💡"
+
         buttons.append([
-            InlineKeyboardButton(text=f"🔹 {prod[1]} - {price_formatted} تومان", callback_data=f"prod_{prod[0]}")
+            InlineKeyboardButton(text=f"{emoji} {name} | {price_formatted} تومان", callback_data=f"prod_{prod[0]}")
         ])
     buttons.append([
-        InlineKeyboardButton(text="🔙 بازگشت به دسته‌بندی‌ها", callback_data="categories_list", style=ButtonStyle.DANGER)
+        InlineKeyboardButton(text="🔙 بازگشت به دسته‌بندی‌ها 📁", callback_data="categories_list", style=ButtonStyle.DANGER)
     ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_product_details_keyboard(product_id: int, category_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+    # If product is VPN Single User (ID 4), we add a Free Test Trial Button as requested!
+    buttons = [
         [
             InlineKeyboardButton(text="💳 خرید و پرداخت", callback_data=f"buy_{product_id}", style=ButtonStyle.SUCCESS)
-        ],
-        [
-            InlineKeyboardButton(text="🔙 بازگشت به محصولات", callback_data=f"cat_{category_id}", style=ButtonStyle.DANGER)
         ]
+    ]
+    if product_id == 4:
+        buttons.append([
+            InlineKeyboardButton(text="🎁 دریافت اکانت تست VPN", callback_data="free_test_account", style=ButtonStyle.PRIMARY)
+        ])
+    buttons.append([
+        InlineKeyboardButton(text="🔙 بازگشت به محصولات", callback_data="categories_list", style=ButtonStyle.DANGER)
     ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_payment_methods_keyboard(order_id: str, product_id: int, allow_wallet: bool = False) -> InlineKeyboardMarkup:
     buttons = []
@@ -74,14 +108,9 @@ def get_payment_methods_keyboard(order_id: str, product_id: int, allow_wallet: b
         ])
 
     buttons.append([
-        InlineKeyboardButton(text="🔗 پرداخت آنلاین زرین‌پال", callback_data=f"pay_zarinpal_{order_id}", style=ButtonStyle.PRIMARY)
-    ])
-    buttons.append([
         InlineKeyboardButton(text="💳 کارت به کارت (آپلود رسید)", callback_data=f"pay_card_{order_id}", style=ButtonStyle.PRIMARY)
     ])
-    buttons.append([
-        InlineKeyboardButton(text="🎟️ اعمال کد تخفیف", callback_data=f"apply_discount_{order_id}", style=ButtonStyle.SUCCESS)
-    ])
+    # Discount buttons and ZarinPal online gateway have been removed as requested!
     buttons.append([
         InlineKeyboardButton(text="🔙 انصراف و بازگشت", callback_data="categories_list", style=ButtonStyle.DANGER)
     ])
